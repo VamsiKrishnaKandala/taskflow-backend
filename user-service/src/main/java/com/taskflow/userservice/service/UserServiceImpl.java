@@ -6,13 +6,18 @@ import com.taskflow.userservice.dto.UserCreateRequest;
 import com.taskflow.userservice.dto.UserResponse;
 import com.taskflow.userservice.exception.DuplicateResourceException;
 import com.taskflow.userservice.exception.ResourceNotFoundException;
+import com.taskflow.userservice.model.BlacklistedToken;
 import com.taskflow.userservice.model.User;
+import com.taskflow.userservice.repository.BlacklistedTokenRepository;
 import com.taskflow.userservice.repository.UserRepository;
 import com.taskflow.userservice.security.JwtUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 //ADD THIS LINE
 import com.taskflow.userservice.exception.InvalidLoginException;
+
+import java.time.LocalDateTime;
+
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
@@ -30,7 +35,8 @@ public class UserServiceImpl implements UserService {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtUtil jwtUtil;
-
+    private final BlacklistedTokenRepository blacklistedTokenRepository;
+    
     /**
      * Registers a new user.
      * 1. Checks for duplicate email.
@@ -140,5 +146,41 @@ public class UserServiceImpl implements UserService {
                     return Mono.error(new ResourceNotFoundException("User not found with ID: " + id));
                 }))
                 .map(UserResponse::fromEntity); // 3. Convert to DTO
+    }
+    /**
+     * Blacklists the provided JWT.
+     * Extracts signature and expiry, then saves to the blacklist table.
+     *
+     * @param bearerToken The full "Bearer <token>" string from the Authorization header.
+     * @return Mono<Void> indicating completion or error.
+     */
+    @Override
+    public Mono<Void> logoutUser(String bearerToken){
+    	log.info("Attempting to blacklist token");
+    	if(bearerToken == null || !bearerToken.startsWith("Bearer ")) {
+    		log.warn("Logout failed: Invalid Bearer token format.");
+    		return Mono.error(new IllegalArgumentException("Invalid token format"));
+    	}
+    	String token = bearerToken.substring(7);
+    	String signature = jwtUtil.extractSignature(token);
+    	LocalDateTime expiry = jwtUtil.extractExpirationAsLocalDateTime(token);
+    	
+    	if (signature == null || expiry == null) {
+            log.warn("Logout failed: Could not extract signature or expiry from token.");
+            return Mono.error(new IllegalArgumentException("Invalid token data"));
+        }
+    	if(expiry.isBefore(LocalDateTime.now())) {
+    		log.info("Token already expired, no need to blacklist.");
+    		return Mono.empty();
+    	}
+    	
+    	BlacklistedToken blacklisted = BlacklistedToken.builder()
+    			.tokenSignature(signature)
+    			.expiry(expiry)
+    			.build();
+    	log.info("Saving token signature to blacklist with expiry: {}",expiry);
+    	return blacklistedTokenRepository.save(blacklisted)
+    			.doOnError(e -> log.error("Failed to save token to blacklist",e))
+    			.then();
     }
 }

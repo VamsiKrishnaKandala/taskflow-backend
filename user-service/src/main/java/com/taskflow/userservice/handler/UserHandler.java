@@ -2,6 +2,7 @@ package com.taskflow.userservice.handler;
 
 import java.util.stream.Collectors;
 
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
@@ -121,5 +122,27 @@ public class UserHandler {
             // Throw the correct exception for bad web input
             throw new org.springframework.web.server.ServerWebInputException(errorDetails);
         }
+    }
+    
+    /**
+     * Handles the user logout request (POST /auth/logout).
+     * Expects the token to be blacklisted in the Authorization header.
+     *
+     * @param request The incoming ServerRequest.
+     * @return A Mono<ServerResponse> with status 200 (OK) if successful.
+     */
+    public Mono<ServerResponse> handleLogoutUser(ServerRequest request){
+    	log.info("Handling request for user logout");
+    	
+    	// Extract the token from the header
+    	String authHeader = request.headers().firstHeader(HttpHeaders.AUTHORIZATION);
+    	
+    	if(authHeader == null) {
+    		return ServerResponse.status(HttpStatus.UNAUTHORIZED)
+    				.bodyValue("Missing Authorization header");
+    	}
+    	return userService.logoutUser(authHeader)
+    			.then(ServerResponse.ok().build())
+    			.doOnError(ex -> log.warn("Logout failed: {}",ex.getMessage()));
     }
 }

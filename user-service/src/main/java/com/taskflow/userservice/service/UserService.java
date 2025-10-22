@@ -38,4 +38,6 @@ public interface UserService {
      * or an error Mono if the user is not found.
      */
     Mono<UserResponse> getUserById(String id);
+    
+    Mono<Void> logoutUser(String token);
 }

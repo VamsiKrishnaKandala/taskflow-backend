@@ -41,6 +41,8 @@ public class RouterConfig {
 						userHandler::handleLoginUser)
 				.GET("/users/{id}", 
                         userHandler::handleGetUserById)
+				.POST("/auth/logout",
+						userHandler::handleLogoutUser)
 				.build();
 	}
 }

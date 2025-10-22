@@ -11,6 +11,10 @@ import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.http.server.reactive.ServerHttpResponse;
 import org.springframework.stereotype.Component;
 import org.springframework.web.server.ServerWebExchange;
+
+import com.taskflow.apigateway.repository.BlacklistedTokenRepository;
+
+import io.jsonwebtoken.Claims;
 import reactor.core.publisher.Mono;
 
 import java.util.List;
@@ -26,6 +30,7 @@ import java.util.List;
 public class AuthenticationFilter implements GlobalFilter {
 
     private final JwtUtil jwtUtil;
+    private final BlacklistedTokenRepository blacklistedTokenRepository;
 
     // List of public endpoints that do not require authentication
     private final List<String> publicEndpoints = List.of(
@@ -68,14 +73,27 @@ public class AuthenticationFilter implements GlobalFilter {
             if (jwtUtil.validateToken(token)) {
                 log.debug("Token validated successfully for: {}", path);
                 
-                // (Optional but good practice) We can add user info to headers for downstream services
-                // Claims claims = jwtUtil.extractAllClaims(token);
-                // exchange.getRequest().mutate()
-                //         .header("X-User-Id", claims.getSubject())
-                //         .header("X-User-Role", (String) claims.get("role"))
-                //         .build();
+                Claims claims = jwtUtil.extractAllClaims(token); // Need claims to get signature indirectly
+                String signature = token.substring(token.lastIndexOf('.') + 1); // Extract signature manually
 
-                return chain.filter(exchange);
+                return blacklistedTokenRepository.findById(signature)
+                        .flatMap(blacklistedToken -> {
+                            // Token FOUND in blacklist - REJECT
+                            log.warn("Token is blacklisted for path: {}", path);
+                            return onError(exchange, "Token has been invalidated (logged out)", HttpStatus.UNAUTHORIZED);
+                        })
+                        .switchIfEmpty(Mono.defer(() -> {
+                            // Token NOT FOUND in blacklist - PROCEED
+                            log.debug("Token not found in blacklist. Proceeding for path: {}", path);
+                            
+                            // Optional: Add user info headers
+                            // exchange.getRequest().mutate()
+                            //         .header("X-User-Id", claims.getSubject())
+                            //         .header("X-User-Role", (String) claims.get("role"))
+                            //         .build();
+                                    
+                            return chain.filter(exchange);
+                        }));
             } else {
                 log.warn("Invalid token received for: {}", path);
                 return onError(exchange, "Invalid token", HttpStatus.UNAUTHORIZED);

@@ -2,6 +2,7 @@ package com.taskflow.userservice.security;
 
 
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
@@ -140,6 +141,41 @@ public class JwtUtil {
 		}catch(Exception e) {
 			log.warn("Invalid JWT token: {}",e.getMessage());
 			return false;
+		}
+	}
+	/**
+     * Extracts the signature part of a JWT string.
+     * Assumes the standard JWS format: header.payload.signature
+     *
+     * @param token The full JWT string.
+     * @return The signature part, or null if the format is invalid.
+     */
+	public String extractSignature(String token) {
+		if(token==null || token.isEmpty()) {
+			return null;
+		}
+		String[] parts = token.split("\\.");
+		if(parts.length == 3) {
+			return parts[2];
+		}
+		log.warn("Invalid JWT format encountered when extracting signature.");
+		return null;
+	}
+	/**
+     * Extracts the expiration date from the token AS LocalDateTime.
+     *
+     * @param token The JWT string.
+     * @return The expiration date as LocalDateTime, or null if parsing fails.
+     */
+	public LocalDateTime extractExpirationAsLocalDateTime(String token) {
+		try {
+			Date expirationDate = extractExpiration(token);
+			return expirationDate.toInstant()
+					.atZone(java.time.ZoneId.systemDefault())
+					.toLocalDateTime();
+		}catch(Exception e) {
+			log.warn("Could not extract expiration as LocalDateTime: {}", e.getMessage());
+            return null;
 		}
 	}
 }
