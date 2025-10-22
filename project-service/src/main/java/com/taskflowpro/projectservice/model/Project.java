@@ -12,11 +12,12 @@ import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.ArrayList;
 
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-@Builder
+@Builder(toBuilder = true)
 @Table("projects")
 public class Project implements Persistable<String> {
 
@@ -70,10 +71,11 @@ public class Project implements Persistable<String> {
     public void deserializeLists() {
         this.memberIdsList = (memberIds != null && !memberIds.isEmpty())
                 ? Arrays.asList(memberIds.split(","))
-                : Collections.emptyList();
+                : new ArrayList<>(); // ensure non-null
 
         this.tagsList = (tags != null && !tags.isEmpty())
                 ? Arrays.asList(tags.split(","))
-                : Collections.emptyList();
+                : new ArrayList<>(); // ensure non-null
     }
+	
 }

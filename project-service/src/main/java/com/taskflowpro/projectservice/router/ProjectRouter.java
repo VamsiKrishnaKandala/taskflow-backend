@@ -19,13 +19,22 @@ public class ProjectRouter {
     @Bean
     public RouterFunction<ServerResponse> projectRoutes(ProjectHandler handler, GlobalExceptionHandler errorHandler) {
         return RouterFunctions.route()
-                .POST("/projects", handler::createProject)
-                .GET("/projects/{id}", handler::getProjectById)
-                .GET("/projects", handler::getAllProjects)
-                .PUT("/projects/{id}", handler::updateProject)
-                .DELETE("/projects/{id}", handler::deleteProject)
+                // -------------------- CRUD Endpoints --------------------
+                .POST("/projects", handler::createProject)          // Create project
+                .GET("/projects/{id}", handler::getProjectById)    // Get project by ID
+                .GET("/projects", handler::getAllProjects)         // Get all projects
+                .PUT("/projects/{id}", handler::updateProject)     // Update project by ID
+                .DELETE("/projects/{id}", handler::deleteProject)  // Delete project by ID
 
-                // Exception Mappings
+                // -------------------- Team Management Endpoints --------------------
+                .POST("/projects/{id}/members", handler::addMembers)   // Add members
+                .DELETE("/projects/{id}/members", handler::removeMembers) // Remove members
+
+                // -------------------- Tag Management Endpoints --------------------
+                .POST("/projects/{id}/tags", handler::addTags)        // Add tags
+                .DELETE("/projects/{id}/tags", handler::removeTags)   // Remove tags
+
+                // -------------------- Exception Mappings --------------------
                 .onError(ProjectNotFoundException.class,
                         (ex, request) -> errorHandler.handleProjectNotFound(request, (ProjectNotFoundException) ex))
                 .onError(InvalidProjectDataException.class,

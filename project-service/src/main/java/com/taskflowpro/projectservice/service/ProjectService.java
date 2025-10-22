@@ -9,6 +9,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
+
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
@@ -16,6 +21,23 @@ import reactor.core.publisher.Mono;
 public class ProjectService {
 
     private final ProjectRepository projectRepository;
+
+    // -------------------- Event Sink --------------------
+    // Reactive sink to publish project-related events
+    private final Sinks.Many<String> projectEventSink = Sinks.many().multicast().onBackpressureBuffer();
+
+    /**
+     * Publishes a project-related event to the reactive event stream.
+     * @param event String describing the event (e.g., "project.member.added: userId -> projectId")
+     */
+    private void publishEvent(String event) {
+        Sinks.EmitResult result = projectEventSink.tryEmitNext(event);
+        if (result.isFailure()) {
+            log.error("Failed to publish event '{}': {}", event, result);
+        } else {
+            log.info("Event published: {}", event);
+        }
+    }
 
     /**
      * Creates a new Project with PF-XXX custom ID.
@@ -112,6 +134,7 @@ public class ProjectService {
                 .doOnSuccess(p -> log.info("Project updated successfully: {}", p.getId()))
                 .doOnError(e -> log.error("Error updating project: {}", e.getMessage()));
     }
+
     /**
      * Deletes a project by ID, throws ProjectNotFoundException if it doesn't exist.
      */
@@ -124,6 +147,99 @@ public class ProjectService {
                         .doOnSuccess(v -> log.info("Project deleted successfully: {}", id))
                         .doOnError(e -> log.error("Error deleting project {}: {}", id, e.getMessage()))
                 );
+    }
+
+    // -------------------- New Methods for Team Management --------------------
+
+    public Mono<Project> addMembers(String projectId, List<String> newMemberIds) {
+        log.info("Adding members {} to project {}", newMemberIds, projectId);
+        return projectRepository.findById(projectId)
+                .switchIfEmpty(Mono.error(new ProjectNotFoundException(projectId)))
+                .flatMap(project -> {
+                	project.deserializeLists();
+                	
+                    Set<String> currentMembers = new HashSet<>(project.getMemberIdsList());
+                    currentMembers.addAll(newMemberIds);
+                    project.setMemberIdsList(List.copyOf(currentMembers));
+                    project.serializeLists();
+                    return projectRepository.save(project)
+                            .map(saved -> {
+                                saved.deserializeLists();
+                                newMemberIds.forEach(id -> publishEvent("project.member.added: " + id + " -> " + projectId));
+                                return saved;
+                            });
+                });
+    }
+
+    public Mono<Project> removeMembers(String projectId, List<String> removeMemberIds) {
+        log.info("Removing members {} from project {}", removeMemberIds, projectId);
+        return projectRepository.findById(projectId)
+                .switchIfEmpty(Mono.error(new ProjectNotFoundException(projectId)))
+                .flatMap(project -> {
+                	project.deserializeLists();
+                	
+                    Set<String> currentMembers = new HashSet<>(project.getMemberIdsList());
+                    currentMembers.removeAll(removeMemberIds);
+                    project.setMemberIdsList(List.copyOf(currentMembers));
+                    project.serializeLists();
+                    return projectRepository.save(project)
+                            .map(saved -> {
+                                saved.deserializeLists();
+                                removeMemberIds.forEach(id -> publishEvent("project.member.removed: " + id + " -> " + projectId));
+                                return saved;
+                            });
+                });
+    }
+
+    // -------------------- New Methods for Tag Management --------------------
+
+    public Mono<Project> addTags(String projectId, List<String> tags) {
+        log.info("Adding tags {} to project {}", tags, projectId);
+        return projectRepository.findById(projectId)
+                .switchIfEmpty(Mono.error(new ProjectNotFoundException(projectId)))
+                .flatMap(project -> {
+                	project.deserializeLists();
+                	
+                    Set<String> currentTags = new HashSet<>(project.getTagsList());
+                    currentTags.addAll(tags);
+                    project.setTagsList(List.copyOf(currentTags));
+                    project.serializeLists();
+                    return projectRepository.save(project)
+                            .map(saved -> {
+                                saved.deserializeLists();
+                                tags.forEach(tag -> publishEvent("project.tag.added: " + tag + " -> " + projectId));
+                                return saved;
+                            });
+                });
+    }
+
+    public Mono<Project> removeTags(String projectId, List<String> tags) {
+        log.info("Removing tags {} from project {}", tags, projectId);
+        return projectRepository.findById(projectId)
+                .switchIfEmpty(Mono.error(new ProjectNotFoundException(projectId)))
+                .flatMap(project -> {
+                	project.deserializeLists();
+                	
+                    Set<String> currentTags = new HashSet<>(project.getTagsList());
+                    currentTags.removeAll(tags);
+                    project.setTagsList(List.copyOf(currentTags));
+                    project.serializeLists();
+                    return projectRepository.save(project)
+                            .map(saved -> {
+                                saved.deserializeLists();
+                                tags.forEach(tag -> publishEvent("project.tag.removed: " + tag + " -> " + projectId));
+                                return saved;
+                            });
+                });
+    }
+
+    // -------------------- Event Stream --------------------
+
+    /**
+     * Exposes a reactive Flux stream for all project events.
+     */
+    public Flux<String> projectEventsStream() {
+        return projectEventSink.asFlux();
     }
 
 }

@@ -66,4 +66,20 @@ public class GlobalExceptionHandler {
         log.error("Unhandled exception: {}", ex.getMessage(), ex);
         return buildErrorResponse(request, HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error", ex.getMessage());
     }
+    /**
+     * Handles role-based authorization failures.
+     */
+    public Mono<ServerResponse> handleUnauthorizedAction(ServerRequest request, UnauthorizedActionException ex) {
+        log.warn("UnauthorizedActionException: {}", ex.getMessage());
+        return buildErrorResponse(request, HttpStatus.FORBIDDEN, "Unauthorized Action", ex.getMessage());
+    }
+
+    /**
+     * Handles reactive event publishing failures.
+     */
+    public Mono<ServerResponse> handleProjectEventPublishing(ServerRequest request, ProjectEventPublishingException ex) {
+        log.error("ProjectEventPublishingException: {}", ex.getMessage(), ex);
+        return buildErrorResponse(request, HttpStatus.INTERNAL_SERVER_ERROR, "Project Event Publishing Failed", ex.getMessage());
+    }
+
 }
