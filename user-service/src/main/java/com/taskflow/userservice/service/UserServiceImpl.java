@@ -7,6 +7,7 @@ import com.taskflow.userservice.dto.UserResponse;
 import com.taskflow.userservice.exception.DuplicateResourceException;
 import com.taskflow.userservice.exception.ResourceNotFoundException;
 import com.taskflow.userservice.model.BlacklistedToken;
+import com.taskflow.userservice.model.Role;
 import com.taskflow.userservice.model.User;
 import com.taskflow.userservice.repository.BlacklistedTokenRepository;
 import com.taskflow.userservice.repository.UserRepository;
@@ -20,6 +21,8 @@ import java.time.LocalDateTime;
 
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 /**
@@ -182,5 +185,47 @@ public class UserServiceImpl implements UserService {
     	return blacklistedTokenRepository.save(blacklisted)
     			.doOnError(e -> log.error("Failed to save token to blacklist",e))
     			.then();
+    }
+    /**
+     * Retrieves all users.
+     *
+     * @return Flux<UserResponse> emitting all users.
+     */
+    @Override
+    public Flux<UserResponse> findAllUsers() {
+        log.info("Fetching all users");
+        return userRepository.findAll() // Use the repository's findAll method
+                .map(UserResponse::fromEntity) // Convert each User entity to UserResponse
+                .doOnError(ex -> log.error("Error fetching all users", ex));
+    }
+    /**
+     * Updates the role for a given user ID.
+     *
+     * @param userId The ID of the user.
+     * @param newRole The new role.
+     * @return Mono<UserResponse> emitting the updated user or error.
+     */
+    @Override
+    public Mono<UserResponse> updateUserRole(String userId, Role newRole) {
+        log.info("Attempting to update role for user ID: {} to {}", userId, newRole);
+
+        // 1. Find the user by ID
+        return userRepository.findById(userId)
+                .switchIfEmpty(Mono.defer(() -> {
+                    // 2. If user not found, throw error
+                    log.warn("User not found with ID: {} during role update", userId);
+                    return Mono.error(new ResourceNotFoundException("User not found with ID: " + userId));
+                }))
+                .flatMap(user -> {
+                    // 3. Update the user's role
+                    log.debug("Found user {}, updating role from {} to {}", userId, user.getRole(), newRole);
+                    user.setRole(newRole);
+                    user.setNew(false); // Mark as existing for the save operation
+
+                    // 4. Save the updated user
+                    return userRepository.save(user);
+                })
+                .map(UserResponse::fromEntity) // 5. Convert saved user to DTO
+                .doOnError(ex -> log.error("Error updating role for user {}: {}", userId, ex.getMessage()));
     }
 }

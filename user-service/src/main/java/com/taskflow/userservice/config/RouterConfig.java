@@ -39,10 +39,15 @@ public class RouterConfig {
 				.POST("/auth/login",
 						accept(MediaType.APPLICATION_JSON),
 						userHandler::handleLoginUser)
+				.GET("/users",
+						userHandler::handleListUsers)
 				.GET("/users/{id}", 
                         userHandler::handleGetUserById)
 				.POST("/auth/logout",
 						userHandler::handleLogoutUser)
+				.PUT("/users/{id}/role", // Route for PUT /users/{id}/role
+		                 accept(MediaType.APPLICATION_JSON), // Expect a JSON body
+		                 userHandler::handleUpdateUserRole)
 				.build();
 	}
 }

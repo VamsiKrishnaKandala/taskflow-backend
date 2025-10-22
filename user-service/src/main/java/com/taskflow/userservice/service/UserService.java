@@ -4,6 +4,9 @@ import com.taskflow.userservice.dto.AuthRequest;
 import com.taskflow.userservice.dto.AuthResponse;
 import com.taskflow.userservice.dto.UserCreateRequest;
 import com.taskflow.userservice.dto.UserResponse;
+import com.taskflow.userservice.model.Role;
+
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 /**
@@ -40,4 +43,21 @@ public interface UserService {
     Mono<UserResponse> getUserById(String id);
     
     Mono<Void> logoutUser(String token);
+    
+    /**
+     * Retrieves all users in the system.
+     *
+     * @return A Flux emitting all User data (as UserResponse DTOs).
+     */
+    Flux<UserResponse> findAllUsers();
+    
+    /**
+     * Updates the role of an existing user.
+     *
+     * @param userId The ID of the user to update.
+     * @param newRole The new role to assign.
+     * @return A Mono emitting the updated User's data (as UserResponse),
+     * or an error Mono if the user is not found.
+     */
+    Mono<UserResponse> updateUserRole(String userId, Role newRole);
 }

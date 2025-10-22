@@ -13,11 +13,13 @@ import com.taskflow.userservice.dto.AuthRequest;
 import com.taskflow.userservice.dto.AuthResponse;
 import com.taskflow.userservice.dto.UserCreateRequest;
 import com.taskflow.userservice.dto.UserResponse;
+import com.taskflow.userservice.dto.UserRoleUpdateRequest;
 import com.taskflow.userservice.service.UserService;
 
 import jakarta.validation.Validator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 /**
@@ -144,5 +146,49 @@ public class UserHandler {
     	return userService.logoutUser(authHeader)
     			.then(ServerResponse.ok().build())
     			.doOnError(ex -> log.warn("Logout failed: {}",ex.getMessage()));
+    }
+    /**
+     * Handles the list all users request (GET /users).
+     *
+     * @param request The incoming ServerRequest.
+     * @return A Mono<ServerResponse> containing a Flux of UserResponse,
+     * or an error response.
+     */
+    public Mono<ServerResponse> handleListUsers(ServerRequest request) {
+        log.info("Handling request to list all users");
+
+        Flux<UserResponse> userFlux = userService.findAllUsers();
+
+        return ServerResponse.ok()
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(userFlux, UserResponse.class); // Stream the Flux in the response body
+    }
+    /**
+     * Handles the update user role request (PUT /users/{id}/role).
+     *
+     * @param request The incoming ServerRequest, containing the UserRoleUpdateRequest in its body
+     * and the user ID in the path.
+     * @return A Mono<ServerResponse> with status 200 (OK) and the updated user's data,
+     * or an error status (400, 404).
+     */
+    public Mono<ServerResponse> handleUpdateUserRole(ServerRequest request) {
+        String userId = request.pathVariable("id");
+        log.info("Handling request to update role for user ID: {}", userId);
+
+        // 1. Extract and validate the request body
+        Mono<UserRoleUpdateRequest> requestMono = request.bodyToMono(UserRoleUpdateRequest.class)
+                .doOnNext(this::validateRequest); // Use existing validation helper
+
+        // 2. Perform the update via the service
+        return requestMono
+                .flatMap(updateRequest -> userService.updateUserRole(userId, updateRequest.getNewRole()))
+                .flatMap(updatedUser ->
+                    // 3. On success, return 200 OK with updated user
+                    ServerResponse.ok()
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .bodyValue(updatedUser)
+                )
+                .doOnError(ex -> log.warn("Update role failed for user {}: {}", userId, ex.getMessage()));
+        // GlobalExceptionHandler handles 400 (validation) and 404 (not found)
     }
 }
