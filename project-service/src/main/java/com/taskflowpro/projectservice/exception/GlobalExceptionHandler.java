@@ -22,13 +22,14 @@ public class GlobalExceptionHandler {
      * Builds a standard error response with structured JSON.
      */
     private Mono<ServerResponse> buildErrorResponse(ServerRequest request, HttpStatus status, String error, String message) {
-        ErrorResponse errorResponse = new ErrorResponse(
-                LocalDateTime.now(),
-                status.value(),
-                error,
-                message,
-                request.path()
-        );
+        ErrorResponse errorResponse = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(status.value())
+                .error(error)
+                .message(message)
+                .path(request.path())
+                .build();
+
         log.error("Exception handled [{}]: {} - {}", status, error, message);
         return ServerResponse.status(status)
                 .contentType(MediaType.APPLICATION_JSON)
@@ -66,6 +67,7 @@ public class GlobalExceptionHandler {
         log.error("Unhandled exception: {}", ex.getMessage(), ex);
         return buildErrorResponse(request, HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error", ex.getMessage());
     }
+
     /**
      * Handles role-based authorization failures.
      */
@@ -81,5 +83,4 @@ public class GlobalExceptionHandler {
         log.error("ProjectEventPublishingException: {}", ex.getMessage(), ex);
         return buildErrorResponse(request, HttpStatus.INTERNAL_SERVER_ERROR, "Project Event Publishing Failed", ex.getMessage());
     }
-
 }

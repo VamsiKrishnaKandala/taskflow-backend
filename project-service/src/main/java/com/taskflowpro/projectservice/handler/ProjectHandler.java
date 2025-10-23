@@ -10,8 +10,12 @@ import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.server.ServerRequest;
 import org.springframework.web.reactive.function.server.ServerResponse;
+import org.springframework.core.ParameterizedTypeReference;
 
-import com.taskflowpro.projectservice.model.Project;
+import com.taskflowpro.projectservice.dto.ProjectRequestDTO;
+import com.taskflowpro.projectservice.dto.ProjectResponseDTO;
+import com.taskflowpro.projectservice.dto.ProjectMembersDTO;
+import com.taskflowpro.projectservice.dto.ProjectTagsDTO;
 import com.taskflowpro.projectservice.service.ProjectService;
 
 import jakarta.validation.ConstraintViolation;
@@ -26,7 +30,7 @@ import reactor.core.publisher.Mono;
  * - Member management (add/remove)
  * - Tag management (add/remove)
  * 
- * This handler works with reactive types (Mono/Flux) and delegates business logic to ProjectService.
+ * Works with DTOs (ProjectRequestDTO, ProjectResponseDTO, etc.) and reactive types (Mono/Flux)
  */
 @Component
 @RequiredArgsConstructor
@@ -34,16 +38,14 @@ import reactor.core.publisher.Mono;
 public class ProjectHandler {
 
     private final ProjectService projectService; // Service layer for CRUD, member, tag operations
-    private final Validator validator;           // Optional Jakarta Bean Validator for request validation
+    private final Validator validator;           // Jakarta Bean Validator for request validation
 
     /**
-     * Validates an object using Jakarta Bean Validation.
+     * Validates a DTO object using Jakarta Bean Validation.
      * Returns a Mono<Void> that emits an error if validation fails.
-     * @param object object to validate (e.g., Project)
-     * @param <T> type of object
      */
     private <T> Mono<Void> validate(T object) {
-        if (validator == null) return Mono.empty(); // skip validation if validator is null (useful in tests)
+        if (validator == null) return Mono.empty(); // skip validation if validator is null
         Set<ConstraintViolation<T>> violations = validator.validate(object);
         if (!violations.isEmpty()) {
             String errorMessages = violations.stream()
@@ -57,26 +59,15 @@ public class ProjectHandler {
 
     // -------------------- CRUD OPERATIONS --------------------
 
-    /**
-     * Creates a new project.
-     * - Validates incoming Project object.
-     * - Calls ProjectService to save.
-     * - Returns saved project in response.
-     */
     public Mono<ServerResponse> createProject(ServerRequest request) {
-        return request.bodyToMono(Project.class)   // parse JSON body into Project
-                .flatMap(project -> validate(project)
-                        .then(projectService.createProject(project))) // delegate creation
+        return request.bodyToMono(ProjectRequestDTO.class)
+                .flatMap(dto -> validate(dto)
+                        .then(projectService.createProject(dto)))
                 .flatMap(saved -> ServerResponse.ok()
                         .contentType(MediaType.APPLICATION_JSON)
-                        .bodyValue(saved)); // return saved project
+                        .bodyValue(saved));
     }
 
-    /**
-     * Retrieves a project by ID.
-     * - Calls ProjectService to fetch project.
-     * - Returns project if found; else exception is propagated.
-     */
     public Mono<ServerResponse> getProjectById(ServerRequest request) {
         String id = request.pathVariable("id");
         log.info("Fetching project with ID: {}", id);
@@ -86,39 +77,23 @@ public class ProjectHandler {
                         .bodyValue(project));
     }
 
-    /**
-     * Retrieves all projects.
-     * - Returns Flux<Project> from service.
-     * - Spring WebFlux automatically serializes the list to JSON.
-     */
     public Mono<ServerResponse> getAllProjects(ServerRequest request) {
         log.info("Fetching all projects");
         return ServerResponse.ok()
                 .contentType(MediaType.APPLICATION_JSON)
-                .body(projectService.getAllProjects(), Project.class);
+                .body(projectService.getAllProjects(), ProjectResponseDTO.class);
     }
 
-    /**
-     * Updates a project by ID.
-     * - Validates incoming Project object.
-     * - Calls service to update.
-     * - Returns updated project.
-     */
     public Mono<ServerResponse> updateProject(ServerRequest request) {
         String id = request.pathVariable("id");
-        return request.bodyToMono(Project.class)
-                .flatMap(project -> validate(project)
-                        .then(projectService.updateProject(id, project)))
+        return request.bodyToMono(ProjectRequestDTO.class)
+                .flatMap(dto -> validate(dto)
+                        .then(projectService.updateProject(id, dto)))
                 .flatMap(updated -> ServerResponse.ok()
                         .contentType(MediaType.APPLICATION_JSON)
                         .bodyValue(updated));
     }
 
-    /**
-     * Deletes a project by ID.
-     * - Calls service to delete project.
-     * - Returns simple JSON message confirming deletion.
-     */
     public Mono<ServerResponse> deleteProject(ServerRequest request) {
         String id = request.pathVariable("id");
         return projectService.deleteProject(id)
@@ -132,57 +107,54 @@ public class ProjectHandler {
 
     // -------------------- MEMBER MANAGEMENT --------------------
 
-    /**
-     * Adds members to a project.
-     * - Expects JSON array of member IDs in request body.
-     * - Delegates addition to ProjectService.
-     */
     public Mono<ServerResponse> addMembers(ServerRequest request) {
         String projectId = request.pathVariable("id");
+        
+        // Reads the raw JSON array ["User1", "User2"] into List<String>
         return request.bodyToMono(new ParameterizedTypeReference<List<String>>() {})
-                .flatMap(memberIds -> projectService.addMembers(projectId, memberIds))
+                // Maps the List<String> to your ProjectMembersDTO
+                .map(memberList -> new ProjectMembersDTO(memberList))
+                .flatMap(dto -> projectService.addMembers(projectId, dto))
                 .flatMap(updated -> ServerResponse.ok()
                         .contentType(MediaType.APPLICATION_JSON)
                         .bodyValue(updated));
     }
 
-    /**
-     * Removes members from a project.
-     * - Expects JSON array of member IDs in request body.
-     */
     public Mono<ServerResponse> removeMembers(ServerRequest request) {
         String projectId = request.pathVariable("id");
+        
+        // Reads the raw JSON array ["User1", "User2"] into List<String>
         return request.bodyToMono(new ParameterizedTypeReference<List<String>>() {})
-                .flatMap(memberIds -> projectService.removeMembers(projectId, memberIds))
+                // Maps the List<String> to your ProjectMembersDTO
+                .map(memberList -> new ProjectMembersDTO(memberList))
+                .flatMap(dto -> projectService.removeMembers(projectId, dto))
                 .flatMap(updated -> ServerResponse.ok()
                         .contentType(MediaType.APPLICATION_JSON)
                         .bodyValue(updated));
     }
-
     // -------------------- TAG MANAGEMENT --------------------
 
-    /**
-     * Adds tags to a project.
-     * - Expects JSON array of tags in request body.
-     * - Delegates addition to ProjectService.
-     */
     public Mono<ServerResponse> addTags(ServerRequest request) {
         String projectId = request.pathVariable("id");
+        
+        // Reads the raw JSON array ["backend", "urgent"] into List<String>
         return request.bodyToMono(new ParameterizedTypeReference<List<String>>() {})
-                .flatMap(tags -> projectService.addTags(projectId, tags))
+                // Maps the List<String> to your ProjectTagsDTO
+                .map(tagList -> new ProjectTagsDTO(tagList))
+                .flatMap(dto -> projectService.addTags(projectId, dto))
                 .flatMap(updated -> ServerResponse.ok()
                         .contentType(MediaType.APPLICATION_JSON)
                         .bodyValue(updated));
     }
 
-    /**
-     * Removes tags from a project.
-     * - Expects JSON array of tags in request body.
-     */
     public Mono<ServerResponse> removeTags(ServerRequest request) {
         String projectId = request.pathVariable("id");
+        
+        // Reads the raw JSON array ["backend", "urgent"] into List<String>
         return request.bodyToMono(new ParameterizedTypeReference<List<String>>() {})
-                .flatMap(tags -> projectService.removeTags(projectId, tags))
+                // Maps the List<String> to your ProjectTagsDTO
+                .map(tagList -> new ProjectTagsDTO(tagList))
+                .flatMap(dto -> projectService.removeTags(projectId, dto))
                 .flatMap(updated -> ServerResponse.ok()
                         .contentType(MediaType.APPLICATION_JSON)
                         .bodyValue(updated));

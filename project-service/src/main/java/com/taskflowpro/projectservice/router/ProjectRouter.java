@@ -11,7 +11,8 @@ import org.springframework.web.reactive.function.server.RouterFunctions;
 import org.springframework.web.reactive.function.server.ServerResponse;
 
 /**
- * Defines functional routes for Project Service, with integrated exception handling.
+ * Defines functional routes for Project Service using reactive WebFlux.
+ * All handler methods now work with DTOs (ProjectRequestDTO, ProjectResponseDTO, etc.).
  */
 @Configuration
 public class ProjectRouter {
@@ -20,19 +21,19 @@ public class ProjectRouter {
     public RouterFunction<ServerResponse> projectRoutes(ProjectHandler handler, GlobalExceptionHandler errorHandler) {
         return RouterFunctions.route()
                 // -------------------- CRUD Endpoints --------------------
-                .POST("/projects", handler::createProject)          // Create project
-                .GET("/projects/{id}", handler::getProjectById)    // Get project by ID
-                .GET("/projects", handler::getAllProjects)         // Get all projects
-                .PUT("/projects/{id}", handler::updateProject)     // Update project by ID
+                .POST("/projects", handler::createProject)          // Create project (expects ProjectRequestDTO)
+                .GET("/projects/{id}", handler::getProjectById)    // Get project by ID (returns ProjectResponseDTO)
+                .GET("/projects", handler::getAllProjects)         // Get all projects (returns Flux<ProjectResponseDTO>)
+                .PUT("/projects/{id}", handler::updateProject)     // Update project by ID (expects ProjectRequestDTO)
                 .DELETE("/projects/{id}", handler::deleteProject)  // Delete project by ID
 
                 // -------------------- Team Management Endpoints --------------------
-                .POST("/projects/{id}/members", handler::addMembers)   // Add members
-                .DELETE("/projects/{id}/members", handler::removeMembers) // Remove members
+                .POST("/projects/{id}/members", handler::addMembers)    // Add members (expects ProjectMembersDTO)
+                .DELETE("/projects/{id}/members", handler::removeMembers) // Remove members (expects ProjectMembersDTO)
 
                 // -------------------- Tag Management Endpoints --------------------
-                .POST("/projects/{id}/tags", handler::addTags)        // Add tags
-                .DELETE("/projects/{id}/tags", handler::removeTags)   // Remove tags
+                .POST("/projects/{id}/tags", handler::addTags)        // Add tags (expects ProjectTagsDTO)
+                .DELETE("/projects/{id}/tags", handler::removeTags)   // Remove tags (expects ProjectTagsDTO)
 
                 // -------------------- Exception Mappings --------------------
                 .onError(ProjectNotFoundException.class,
