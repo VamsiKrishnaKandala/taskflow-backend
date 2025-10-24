@@ -76,7 +76,7 @@ public class JwtUtil {
      * @param token The JWT string.
      * @return The Claims object.
      */
-	private Claims extractAllClaims(String token) {
+	Claims extractAllClaims(String token) {
 		return Jwts.parserBuilder()
 				.setSigningKey(secretKey)
 				.build()
