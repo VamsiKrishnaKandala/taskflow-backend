@@ -1,10 +1,7 @@
 package com.taskflowpro.projectservice.service;
 
-import com.taskflowpro.projectservice.client.TaskServiceClient;
-import com.taskflowpro.projectservice.dto.ProjectRequestDTO;
-import com.taskflowpro.projectservice.dto.ProjectResponseDTO;
-import com.taskflowpro.projectservice.dto.ProjectMembersDTO;
-import com.taskflowpro.projectservice.dto.ProjectTagsDTO;
+import com.taskflowpro.projectservice.client.TaskServiceClientWebClient;
+import com.taskflowpro.projectservice.dto.*;
 import com.taskflowpro.projectservice.exception.InvalidProjectDataException;
 import com.taskflowpro.projectservice.exception.ProjectNotFoundException;
 import com.taskflowpro.projectservice.model.Project;
@@ -21,9 +18,9 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Implementation of ProjectService interface.
- * Preserves all existing business logic, reactive behavior, and event publishing.
- * Added Feign Client integration with TaskServiceClient for optional cascading operations.
+ * Project Service Implementation using WebClient instead of Feign.
+ * Fully reactive and supports CRUD, member management, tag management,
+ * and optional cascading task deletion via TaskService WebClient.
  */
 @Service
 @RequiredArgsConstructor
@@ -31,10 +28,7 @@ import java.util.Set;
 public class ProjectServiceImpl implements ProjectService {
 
     private final ProjectRepository projectRepository;
-
-    private final TaskServiceClient taskServiceClient; // Feign client injected
-
-    // -------------------- Event Sink --------------------
+    private final TaskServiceClientWebClient taskServiceClient; // WebClient-based Task Service
     private final Sinks.Many<String> projectEventSink = Sinks.many().multicast().onBackpressureBuffer();
 
     private void publishEvent(String event) {
@@ -58,8 +52,7 @@ public class ProjectServiceImpl implements ProjectService {
         return projectRepository.findAll()
                 .map(Project::getId)
                 .filter(id -> id != null && id.startsWith("PF-"))
-                .map(id -> id.substring(3))
-                .map(Integer::parseInt)
+                .map(id -> Integer.parseInt(id.substring(3)))
                 .sort()
                 .last(0)
                 .flatMap(max -> {
@@ -71,7 +64,7 @@ public class ProjectServiceImpl implements ProjectService {
                             .deadline(projectRequest.getDeadline())
                             .memberIdsList(projectRequest.getMemberIds())
                             .tagsList(projectRequest.getTags())
-                            .isNew(true) // <-- fixed
+                            .isNew(true)
                             .build();
 
                     project.serializeLists();
@@ -149,19 +142,12 @@ public class ProjectServiceImpl implements ProjectService {
 
         return projectRepository.findById(projectId)
                 .switchIfEmpty(Mono.error(new ProjectNotFoundException(projectId)))
-                .flatMap(existing -> {
-                    // Optional: Cascade delete tasks in Task Service
-                    try {
-                        taskServiceClient.deleteTasksByProjectId(projectId);
-                        log.info("Deleted tasks for project {}", projectId);
-                    } catch (Exception e) {
-                        log.error("Failed to delete tasks for project {}: {}", projectId, e.getMessage());
-                    }
-
-                    return projectRepository.delete(existing)
-                            .doOnSuccess(v -> log.info("Project deleted successfully: {}", projectId))
-                            .doOnError(e -> log.error("Error deleting project {}: {}", projectId, e.getMessage()));
-                });
+                .flatMap(existing -> 
+                    taskServiceClient.deleteTasksByProjectId(projectId) // Cascade delete tasks
+                        .then(projectRepository.delete(existing))
+                        .doOnSuccess(v -> log.info("Project deleted successfully: {}", projectId))
+                        .doOnError(e -> log.error("Error deleting project {}: {}", projectId, e.getMessage()))
+                );
     }
 
     // -------------------- MEMBER MANAGEMENT --------------------
@@ -176,6 +162,7 @@ public class ProjectServiceImpl implements ProjectService {
                     currentMembers.addAll(membersDTO.getMemberIds());
                     project.setMemberIdsList(List.copyOf(currentMembers));
                     project.serializeLists();
+
                     return projectRepository.save(project)
                             .map(saved -> {
                                 saved.deserializeLists();
@@ -196,6 +183,7 @@ public class ProjectServiceImpl implements ProjectService {
                     currentMembers.removeAll(membersDTO.getMemberIds());
                     project.setMemberIdsList(List.copyOf(currentMembers));
                     project.serializeLists();
+
                     return projectRepository.save(project)
                             .map(saved -> {
                                 saved.deserializeLists();
@@ -217,6 +205,7 @@ public class ProjectServiceImpl implements ProjectService {
                     currentTags.addAll(tagsDTO.getTags());
                     project.setTagsList(List.copyOf(currentTags));
                     project.serializeLists();
+
                     return projectRepository.save(project)
                             .map(saved -> {
                                 saved.deserializeLists();
@@ -237,6 +226,7 @@ public class ProjectServiceImpl implements ProjectService {
                     currentTags.removeAll(tagsDTO.getTags());
                     project.setTagsList(List.copyOf(currentTags));
                     project.serializeLists();
+
                     return projectRepository.save(project)
                             .map(saved -> {
                                 saved.deserializeLists();
@@ -252,7 +242,7 @@ public class ProjectServiceImpl implements ProjectService {
         return projectEventSink.asFlux();
     }
 
-    // -------------------- UTILITY --------------------
+    // -------------------- HELPER METHODS --------------------
     private ProjectResponseDTO mapToDTO(Project project) {
         return ProjectResponseDTO.builder()
                 .id(project.getId())
@@ -261,7 +251,6 @@ public class ProjectServiceImpl implements ProjectService {
                 .deadline(project.getDeadline())
                 .memberIds(project.getMemberIdsList())
                 .tags(project.getTagsList())
-                // Removed createdAt and updatedAt since not in Project model
                 .build();
     }
 }
