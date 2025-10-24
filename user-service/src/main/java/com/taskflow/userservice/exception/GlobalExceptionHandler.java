@@ -1,6 +1,9 @@
 package com.taskflow.userservice.exception;
 
 import lombok.extern.slf4j.Slf4j;
+
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -19,6 +22,7 @@ import java.util.List;
  * standardized ErrorResponse.
  */
 @RestControllerAdvice
+@Order(Ordered.HIGHEST_PRECEDENCE)
 @Slf4j
 public class GlobalExceptionHandler {
 
@@ -107,5 +111,20 @@ public class GlobalExceptionHandler {
                 ex.getMessage()
         );
         return Mono.just(ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(errorResponse));
+    }
+    /**
+     * Handles "Access Denied" errors (Authorization failures).
+     * @param ex The custom exception.
+     * @return A Mono<ResponseEntity> with HTTP 403 (Forbidden).
+     */
+    @ExceptionHandler(AccessDeniedException.class)
+    public Mono<ResponseEntity<ErrorResponse>> handleAccessDeniedException(AccessDeniedException ex) {
+        log.warn("Access Denied: {}", ex.getMessage());
+        ErrorResponse errorResponse = new ErrorResponse(
+                HttpStatus.FORBIDDEN.value(),
+                "Access Denied",
+                ex.getMessage()
+        );
+        return Mono.just(ResponseEntity.status(HttpStatus.FORBIDDEN).body(errorResponse));
     }
 }

@@ -33,21 +33,27 @@ public class RouterConfig {
 		//This is the functional equivalent of @RequestMapping
 		return RouterFunctions
 				.route()
+				
+				// Public Routes
 				.POST("/users",
 						accept(MediaType.APPLICATION_JSON),
 						userHandler::handleRegisterUser)
 				.POST("/auth/login",
 						accept(MediaType.APPLICATION_JSON),
 						userHandler::handleLoginUser)
-				.GET("/users",
+				
+				// Protected Routes
+				.GET("/users/list/all",
 						userHandler::handleListUsers)
 				.GET("/users/{id}", 
-                        userHandler::handleGetUserById)
+						userHandler::handleGetUserById)
 				.POST("/auth/logout",
 						userHandler::handleLogoutUser)
 				.PUT("/users/{id}/role", // Route for PUT /users/{id}/role
 		                 accept(MediaType.APPLICATION_JSON), // Expect a JSON body
 		                 userHandler::handleUpdateUserRole)
+				.DELETE("/users/{id}",
+						userHandler::handleDeleteUser)
 				.build();
 	}
 }

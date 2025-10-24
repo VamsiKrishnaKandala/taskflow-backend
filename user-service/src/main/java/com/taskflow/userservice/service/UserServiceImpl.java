@@ -4,7 +4,9 @@ import com.taskflow.userservice.dto.AuthRequest;
 import com.taskflow.userservice.dto.AuthResponse;
 import com.taskflow.userservice.dto.UserCreateRequest;
 import com.taskflow.userservice.dto.UserResponse;
+import com.taskflow.userservice.exception.AccessDeniedException;
 import com.taskflow.userservice.exception.DuplicateResourceException;
+import com.taskflow.userservice.exception.InvalidLoginException;
 import com.taskflow.userservice.exception.ResourceNotFoundException;
 import com.taskflow.userservice.model.BlacklistedToken;
 import com.taskflow.userservice.model.Role;
@@ -14,103 +16,81 @@ import com.taskflow.userservice.repository.UserRepository;
 import com.taskflow.userservice.security.JwtUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-//ADD THIS LINE
-import com.taskflow.userservice.exception.InvalidLoginException;
-
-import java.time.LocalDateTime;
-
+import org.springframework.dao.DuplicateKeyException; // Added for specific catch
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
-
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.time.LocalDateTime;
+
 /**
  * Implementation of the UserService interface.
- * Handles all business logic for user management and authentication.
+ * Handles business logic for user management and authentication.
  */
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class UserServiceImpl implements UserService {
 
-    // Dependencies injected via the constructor (thanks to @RequiredArgsConstructor)
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtUtil jwtUtil;
     private final BlacklistedTokenRepository blacklistedTokenRepository;
-    
+
     /**
-     * Registers a new user.
-     * 1. Checks for duplicate email.
-     * 2. Checks for duplicate custom ID.
-     * 3. Hashes the password.
-     * 4. Saves the new user.
-     * 5. Returns a DTO.
+     * Registers a new user after checking for duplicate ID and email. Hashes the password.
      *
-     * @param createRequest DTO with new user data.
-     * @return Mono<UserResponse> or error.
+     * @param createRequest DTO containing new user data.
+     * @return Mono<UserResponse> containing the created user's data (excluding password),
+     * or an error Mono if duplicates are found.
      */
     @Override
     public Mono<UserResponse> registerUser(UserCreateRequest createRequest) {
         log.info("Attempting to register user with email: {}", createRequest.getEmail());
-        
-        // 1. Convert DTO to User entity
+
         User user = User.builder()
                 .id(createRequest.getId())
                 .name(createRequest.getName())
                 .email(createRequest.getEmail())
-                .password(passwordEncoder.encode(createRequest.getPassword())) // 2. Hash password
+                .password(passwordEncoder.encode(createRequest.getPassword()))
                 .role(createRequest.getRole())
+                // isNew defaults to true via @Builder.Default
                 .build();
 
-        // 3. Start the reactive chain to check for duplicates
         return userRepository.findByEmail(user.getEmail())
                 .flatMap(existingUser -> {
-                    // 4. If email exists, throw error
                     log.warn("Registration failed: Email already exists {}", user.getEmail());
                     return Mono.<User>error(new DuplicateResourceException("Email already exists: " + user.getEmail()));
                 })
-                .switchIfEmpty(Mono.defer(() -> 
-                    // 5. If email is unique, check for duplicate ID
-                    userRepository.findById(user.getId())
-                ))
+                .switchIfEmpty(Mono.defer(() -> userRepository.findById(user.getId())))
                 .flatMap(existingUser -> {
-                    // 6. If ID exists, throw error
                     log.warn("Registration failed: ID already exists {}", user.getId());
                     return Mono.<User>error(new DuplicateResourceException("User ID already exists: " + user.getId()));
                 })
                 .switchIfEmpty(Mono.defer(() -> {
-                    // 7. If both are unique, save the user
                     log.info("Saving new user with ID: {}", user.getId());
-                    return userRepository.save(user);
+                    return userRepository.save(user); // save will perform INSERT due to Persistable.isNew()
                 }))
-                .map(UserResponse::fromEntity); // 8. Convert saved User to UserResponse DTO
+                .map(UserResponse::fromEntity);
     }
 
     /**
-     * Authenticates a user.
-     * 1. Finds user by email.
-     * 2. Verifies password.
-     * 3. Generates JWT.
-     * 4. Returns AuthResponse DTO.
+     * Authenticates a user based on email and password, generates a JWT upon success.
      *
-     * @param authRequest DTO with login credentials.
-     * @return Mono<AuthResponse> or error.
+     * @param authRequest DTO containing login credentials.
+     * @return Mono<AuthResponse> containing the JWT and basic user info,
+     * or an error Mono if credentials are invalid or user not found.
      */
     @Override
     public Mono<AuthResponse> loginUser(AuthRequest authRequest) {
         log.info("Attempting login for user: {}", authRequest.getEmail());
-        
-        // 1. Find user by email
+
         return userRepository.findByEmail(authRequest.getEmail())
                 .flatMap(user -> {
-                    // 2. Check if password matches
                     if (passwordEncoder.matches(authRequest.getPassword(), user.getPassword())) {
                         log.info("Login successful for user: {}", authRequest.getEmail());
-                        // 3. Generate JWT
                         String token = jwtUtil.generateToken(user);
-                        // 4. Build response DTO
                         return Mono.just(AuthResponse.builder()
                                 .token(token)
                                 .userId(user.getId())
@@ -119,113 +99,179 @@ public class UserServiceImpl implements UserService {
                                 .role(user.getRole())
                                 .build());
                     } else {
-                        // 5. Password mismatch
-                        log.warn("Invalid credentials for user: {}", authRequest.getEmail());
+                        log.warn("Invalid credentials provided for user: {}", authRequest.getEmail());
                         return Mono.error(new InvalidLoginException("Invalid credentials"));
                     }
                 })
                 .switchIfEmpty(Mono.defer(() -> {
-                    // 6. User not found
                     log.warn("Login failed, user not found: {}", authRequest.getEmail());
-                    return Mono.error(new InvalidLoginException("Invalid credentials"));
+                    return Mono.error(new InvalidLoginException("Invalid credentials")); // Consistent error message
                 }));
     }
 
     /**
-     * Retrieves a user by their custom ID.
+     * Retrieves a user by their ID, performing authorization checks.
+     * Allows retrieval only if the requester is an ADMIN or retrieving their own profile.
      *
-     * @param id The custom ID of the user.
-     * @return Mono<UserResponse> or error.
+     * @param requestedUserId The ID of the user profile being requested.
+     * @param requesterId     The ID of the user making the request (from token).
+     * @param requesterRole   The Role of the user making the request (from token).
+     * @return Mono<UserResponse> containing the user's data,
+     * or an error Mono if not found or not authorized.
      */
     @Override
-    public Mono<UserResponse> getUserById(String id) {
-        log.info("Fetching user by ID: {}", id);
-        
-        // 1. Find user by ID
-        return userRepository.findById(id)
-                .switchIfEmpty(Mono.defer(() -> {
-                    // 2. If not found, throw error
-                    log.warn("User not found with ID: {}", id);
-                    return Mono.error(new ResourceNotFoundException("User not found with ID: " + id));
-                }))
-                .map(UserResponse::fromEntity); // 3. Convert to DTO
-    }
-    /**
-     * Blacklists the provided JWT.
-     * Extracts signature and expiry, then saves to the blacklist table.
-     *
-     * @param bearerToken The full "Bearer <token>" string from the Authorization header.
-     * @return Mono<Void> indicating completion or error.
-     */
-    @Override
-    public Mono<Void> logoutUser(String bearerToken){
-    	log.info("Attempting to blacklist token");
-    	if(bearerToken == null || !bearerToken.startsWith("Bearer ")) {
-    		log.warn("Logout failed: Invalid Bearer token format.");
-    		return Mono.error(new IllegalArgumentException("Invalid token format"));
-    	}
-    	String token = bearerToken.substring(7);
-    	String signature = jwtUtil.extractSignature(token);
-    	LocalDateTime expiry = jwtUtil.extractExpirationAsLocalDateTime(token);
-    	
-    	if (signature == null || expiry == null) {
-            log.warn("Logout failed: Could not extract signature or expiry from token.");
-            return Mono.error(new IllegalArgumentException("Invalid token data"));
+    public Mono<UserResponse> getUserById(String requestedUserId, String requesterId, String requesterRole) {
+        log.info("Fetching user by ID: {} requested by User ID: {}, Role: {}",
+                 requestedUserId, requesterId, requesterRole);
+
+        boolean isAdmin = Role.ROLE_ADMIN.name().equals(requesterRole);
+        boolean isSelf = requestedUserId.equals(requesterId);
+
+        if (!isAdmin && !isSelf) {
+            log.warn("Access Denied: User {} ({}) attempted to access details for user {}",
+                     requesterId, requesterRole, requestedUserId);
+            return Mono.error(new AccessDeniedException("Users can only access their own details, or must be ADMIN."));
         }
-    	if(expiry.isBefore(LocalDateTime.now())) {
-    		log.info("Token already expired, no need to blacklist.");
-    		return Mono.empty();
-    	}
-    	
-    	BlacklistedToken blacklisted = BlacklistedToken.builder()
-    			.tokenSignature(signature)
-    			.expiry(expiry)
-    			.build();
-    	log.info("Saving token signature to blacklist with expiry: {}",expiry);
-    	return blacklistedTokenRepository.save(blacklisted)
-    			.doOnError(e -> log.error("Failed to save token to blacklist",e))
-    			.then();
+
+        log.debug("Authorization check passed for user {} to access user {}", requesterId, requestedUserId);
+        return userRepository.findById(requestedUserId)
+                .switchIfEmpty(Mono.defer(() -> {
+                    log.warn("User not found with ID: {}", requestedUserId);
+                    return Mono.error(new ResourceNotFoundException("User not found with ID: " + requestedUserId));
+                }))
+                .map(UserResponse::fromEntity);
     }
+
     /**
-     * Retrieves all users.
+     * Retrieves all users. Requires ADMIN role.
      *
-     * @return Flux<UserResponse> emitting all users.
+     * @param requesterRole The Role of the user making the request.
+     * @return Flux<UserResponse> emitting all users,
+     * or an error Flux if the requester is not an ADMIN.
      */
     @Override
-    public Flux<UserResponse> findAllUsers() {
-        log.info("Fetching all users");
-        return userRepository.findAll() // Use the repository's findAll method
-                .map(UserResponse::fromEntity) // Convert each User entity to UserResponse
-                .doOnError(ex -> log.error("Error fetching all users", ex));
+    public Flux<UserResponse> findAllUsers(String requesterRole) {
+        log.info("Fetching all users requested by role: {}", requesterRole);
+
+        if (!Role.ROLE_ADMIN.name().equals(requesterRole)) {
+            log.warn("Access Denied: User with role {} attempted to list all users.", requesterRole);
+            return Flux.error(new AccessDeniedException("Only ADMIN users can list all users."));
+        }
+
+        return userRepository.findAll()
+                .map(UserResponse::fromEntity)
+                .doOnError(ex -> log.error("Error fetching all users", ex)); // Log unexpected errors
     }
+
     /**
-     * Updates the role for a given user ID.
+     * Updates the role of an existing user. (Currently assumes only ADMINs can do this via gateway checks).
      *
-     * @param userId The ID of the user.
-     * @param newRole The new role.
-     * @return Mono<UserResponse> emitting the updated user or error.
+     * @param userId  The ID of the user to update.
+     * @param newRole The new role to assign.
+     * @return Mono<UserResponse> emitting the updated user's data,
+     * or an error Mono if the user is not found.
      */
     @Override
     public Mono<UserResponse> updateUserRole(String userId, Role newRole) {
+        // Note: Authorization (e.g., only Admin) should ideally be checked here too,
+        // using the requesterRole if passed down, or handled via endpoint security.
         log.info("Attempting to update role for user ID: {} to {}", userId, newRole);
 
-        // 1. Find the user by ID
         return userRepository.findById(userId)
                 .switchIfEmpty(Mono.defer(() -> {
-                    // 2. If user not found, throw error
                     log.warn("User not found with ID: {} during role update", userId);
                     return Mono.error(new ResourceNotFoundException("User not found with ID: " + userId));
                 }))
                 .flatMap(user -> {
-                    // 3. Update the user's role
-                    log.debug("Found user {}, updating role from {} to {}", userId, user.getRole(), newRole);
+                    log.info("Found user {}, updating role from {} to {}", userId, user.getRole(), newRole);
                     user.setRole(newRole);
-                    user.setNew(false); // Mark as existing for the save operation
-
-                    // 4. Save the updated user
+                    user.setNew(false); // Mark as existing for UPDATE
                     return userRepository.save(user);
                 })
-                .map(UserResponse::fromEntity) // 5. Convert saved user to DTO
+                .map(UserResponse::fromEntity)
                 .doOnError(ex -> log.error("Error updating role for user {}: {}", userId, ex.getMessage()));
+    }
+
+    /**
+     * Blacklists the provided JWT upon user logout. Ignores attempts to blacklist already blacklisted tokens.
+     *
+     * @param bearerToken The full "Bearer <token>" string from the Authorization header.
+     * @return Mono<Void> indicating completion or error if token format is invalid.
+     */
+    @Override
+    public Mono<Void> logoutUser(String bearerToken) {
+        log.info("Attempting to blacklist token on logout");
+
+        if (bearerToken == null || !bearerToken.startsWith("Bearer ")) {
+            log.warn("Logout failed: Invalid or missing Bearer token format.");
+            // Consider returning InvalidLoginException or similar if GlobalExceptionHandler maps it to 401/400
+            return Mono.error(new IllegalArgumentException("Invalid token format for logout"));
+        }
+
+        String token = bearerToken.substring(7);
+        String signature = jwtUtil.extractSignature(token);
+        LocalDateTime expiry = jwtUtil.extractExpirationAsLocalDateTime(token);
+
+        if (signature == null || expiry == null) {
+            log.warn("Logout failed: Could not extract signature or expiry from token.");
+            return Mono.error(new IllegalArgumentException("Invalid token data for logout"));
+        }
+
+        // Don't blacklist already expired tokens
+        if (expiry.isBefore(LocalDateTime.now())) {
+             log.info("Token already expired, no need to blacklist.");
+             return Mono.empty(); // Success, nothing to do
+        }
+
+        BlacklistedToken blacklisted = BlacklistedToken.builder()
+                .tokenSignature(signature)
+                .expiry(expiry)
+                // isNew defaults to true via @Builder.Default
+                .build();
+
+        log.info("Saving token signature to blacklist with expiry: {}", expiry);
+        return blacklistedTokenRepository.save(blacklisted) // save performs INSERT due to Persistable.isNew()
+                .doOnError(e -> {
+                    // Log differently for duplicate vs other errors
+                    if (e instanceof DuplicateKeyException) {
+                        log.warn("Attempted to blacklist token that was already blacklisted. Signature: {}", signature);
+                    } else {
+                        log.error("Failed to save token to blacklist", e); // Log other DB errors
+                    }
+                })
+                .onErrorResume(DuplicateKeyException.class, e -> {
+                    // If duplicate, treat as success (idempotent)
+                    return Mono.empty(); // Return empty Mono<Void>
+                })
+                .then(); // Convert Mono<BlacklistedToken> or empty Mono to Mono<Void>
+    }
+
+    /**
+     * Deletes a user by ID. Requires ADMIN role.
+     *
+     * @param userIdToDelete The ID of the user to delete.
+     * @param requesterRole  The Role of the user making the request.
+     * @return Mono<Void> indicating completion,
+     * or an error Mono if user not found or requester is not ADMIN.
+     */
+    @Override
+    public Mono<Void> deleteUserById(String userIdToDelete, String requesterRole) {
+        log.info("Attempting to delete user ID: {} by user with role: {}", userIdToDelete, requesterRole);
+
+        if (!Role.ROLE_ADMIN.name().equals(requesterRole)) {
+            log.warn("Access Denied: User with role {} attempted to delete user {}", requesterRole, userIdToDelete);
+            return Mono.error(new AccessDeniedException("Only ADMIN users can delete users."));
+        }
+
+        return userRepository.findById(userIdToDelete)
+            .switchIfEmpty(Mono.defer(() -> {
+                log.warn("User not found with ID: {} during deletion attempt", userIdToDelete);
+                return Mono.error(new ResourceNotFoundException("User not found with ID: " + userIdToDelete));
+            }))
+            .flatMap(user -> {
+                 log.info("Found user {}, proceeding with deletion by ADMIN", userIdToDelete);
+                 return userRepository.deleteById(userIdToDelete); // Returns Mono<Void>
+            })
+            .doOnError(ex -> log.error("Error deleting user {}: {}", userIdToDelete, ex.getMessage())); // Log unexpected errors
     }
 }

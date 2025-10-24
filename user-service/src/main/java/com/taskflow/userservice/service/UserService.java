@@ -40,7 +40,7 @@ public interface UserService {
      * @return A Mono emitting the User's data (as UserResponse),
      * or an error Mono if the user is not found.
      */
-    Mono<UserResponse> getUserById(String id);
+    Mono<UserResponse> getUserById(String requestedUserId, String requesterId, String requesterRole);
     
     Mono<Void> logoutUser(String token);
     
@@ -49,7 +49,7 @@ public interface UserService {
      *
      * @return A Flux emitting all User data (as UserResponse DTOs).
      */
-    Flux<UserResponse> findAllUsers();
+    Flux<UserResponse> findAllUsers(String requesterRole);
     
     /**
      * Updates the role of an existing user.
@@ -60,4 +60,6 @@ public interface UserService {
      * or an error Mono if the user is not found.
      */
     Mono<UserResponse> updateUserRole(String userId, Role newRole);
+    
+    Mono<Void> deleteUserById(String userIdToDelete, String requesterRole);
 }
