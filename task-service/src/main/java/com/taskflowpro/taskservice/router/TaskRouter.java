@@ -26,6 +26,8 @@ public class TaskRouter {
                 .PUT("/tasks/{id}/status", handler::updateStatus)
                 .DELETE("/tasks/{id}", handler::deleteTask)
 
+                .DELETE("/tasks/project/{projectId}", handler::deleteTasksByProjectId)
+                
                 .POST("/tasks/{id}/assignees", handler::addAssignees)
                 .DELETE("/tasks/{id}/assignees", handler::removeAssignees)
 

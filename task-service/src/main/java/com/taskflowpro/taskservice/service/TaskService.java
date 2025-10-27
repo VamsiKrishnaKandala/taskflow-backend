@@ -26,6 +26,8 @@ public interface TaskService {
     Mono<TaskResponseDTO> updateTaskStatus(String id, String newStatus, String changedBy);
 
     Mono<Void> deleteTask(String id);
+    
+    Mono<Void> deleteTasksByProjectId(String projectId);
 
     Mono<TaskResponseDTO> addAssignees(String taskId, TaskAssigneesDTO dto);
 

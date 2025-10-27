@@ -157,6 +157,12 @@ public class TaskHandler {
                         .bodyValue(resp))
                 .onErrorResume(e -> handleError("Error deleting task " + id, e));
     }
+    
+    public Mono<ServerResponse> deleteTasksByProjectId(ServerRequest request) {
+        String projectId = request.pathVariable("projectId");
+        return taskService.deleteTasksByProjectId(projectId)
+                .then(ServerResponse.noContent().build());
+    }
 
     // ---------------------------------------------------
     // Assignee & Tag Management
