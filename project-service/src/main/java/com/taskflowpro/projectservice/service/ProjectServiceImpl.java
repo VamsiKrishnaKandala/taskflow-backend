@@ -1,6 +1,7 @@
 package com.taskflowpro.projectservice.service;
 
 import com.taskflowpro.projectservice.client.TaskServiceClientWebClient;
+import com.taskflowpro.projectservice.client.NotificationServiceClientWebClient;
 import com.taskflowpro.projectservice.dto.*;
 import com.taskflowpro.projectservice.exception.InvalidProjectDataException;
 import com.taskflowpro.projectservice.exception.ProjectNotFoundException;
@@ -15,7 +16,9 @@ import reactor.core.publisher.Sinks;
 
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.HashMap;
 
 /**
  * Project Service Implementation using WebClient instead of Feign.
@@ -28,7 +31,8 @@ import java.util.Set;
 public class ProjectServiceImpl implements ProjectService {
 
     private final ProjectRepository projectRepository;
-    private final TaskServiceClientWebClient taskServiceClient; // WebClient-based Task Service
+    private final TaskServiceClientWebClient taskServiceClient;
+    private final NotificationServiceClientWebClient notificationClient;
     private final Sinks.Many<String> projectEventSink = Sinks.many().multicast().onBackpressureBuffer();
 
     private void publishEvent(String event) {
@@ -38,6 +42,14 @@ public class ProjectServiceImpl implements ProjectService {
         } else {
             log.info("Event published: {}", event);
         }
+    }
+
+    // FIX 1: Returns Mono<Void> to allow chaining
+    private Mono<Void> sendNotificationSafe(Map<String, Object> payload) {
+        return notificationClient.sendNotificationEvent(payload)
+                .doOnError(ex -> log.error("Notification failed: {}", ex.getMessage()))
+                .onErrorResume(ex -> Mono.empty()) // Continue flow if notification fails
+                .then(); // Convert Mono<NotificationResponseDTO> to Mono<Void>
     }
 
     // -------------------- CREATE --------------------
@@ -75,7 +87,23 @@ public class ProjectServiceImpl implements ProjectService {
                                 saved.deserializeLists();
                                 return mapToDTO(saved);
                             })
-                            .doOnSuccess(saved -> log.info("Project created successfully with ID: {}", saved.getId()))
+                            .doOnSuccess(saved -> {
+                                log.info("Project created successfully with ID: {}", saved.getId());
+
+                                // ---- Notification Integration (safe) ----
+                                if (saved.getMemberIds() != null && !saved.getMemberIds().isEmpty()) {
+                                    saved.getMemberIds().forEach(memberId -> {
+                                        Map<String, Object> payload = new HashMap<>();
+                                        payload.put("recipientUserId", memberId); // ✅ FIXED
+                                        payload.put("message", "Project " + saved.getName() + " created");
+                                        payload.put("projectId", saved.getId());
+                                        payload.put("eventType", "PROJECT_CREATED");
+
+                                        // Fire-and-forget subscribe here is acceptable in doOnSuccess
+                                        sendNotificationSafe(payload).subscribe(); 
+                                    });
+                                }
+                            })
                             .doOnError(error -> log.error("Error creating project: {}", error.getMessage()));
                 });
     }
@@ -131,7 +159,22 @@ public class ProjectServiceImpl implements ProjectService {
                                 return mapToDTO(p);
                             });
                 })
-                .doOnSuccess(p -> log.info("Project updated successfully: {}", p.getId()))
+                .doOnSuccess(p -> {
+                    log.info("Project updated successfully: {}", p.getId());
+
+                    // ---- Notification Integration (safe) ----
+                    if (p.getMemberIds() != null && !p.getMemberIds().isEmpty()) {
+                        p.getMemberIds().forEach(memberId -> {
+                            Map<String, Object> payload = new HashMap<>();
+                            payload.put("recipientUserId", memberId); // ✅ FIXED
+                            payload.put("message", "Project " + p.getName() + " updated");
+                            payload.put("projectId", p.getId());
+                            payload.put("eventType", "PROJECT_UPDATED");
+
+                            sendNotificationSafe(payload).subscribe(); // Still fire-and-forget in doOnSuccess
+                        });
+                    }
+                })
                 .doOnError(e -> log.error("Error updating project: {}", e.getMessage()));
     }
 
@@ -142,12 +185,40 @@ public class ProjectServiceImpl implements ProjectService {
 
         return projectRepository.findById(projectId)
                 .switchIfEmpty(Mono.error(new ProjectNotFoundException(projectId)))
-                .flatMap(existing -> 
-                    taskServiceClient.deleteTasksByProjectId(projectId) // Cascade delete tasks
-                        .then(projectRepository.delete(existing))
-                        .doOnSuccess(v -> log.info("Project deleted successfully: {}", projectId))
-                        .doOnError(e -> log.error("Error deleting project {}: {}", projectId, e.getMessage()))
-                );
+                .flatMap(existing -> {
+                    String projectName = existing.getName();
+                    // Deserialize the list here to ensure the member list is ready before deletion
+                    existing.deserializeLists(); 
+                    List<String> membersToNotify = existing.getMemberIdsList() != null ? existing.getMemberIdsList() : List.of();
+                    
+                    // 1. Prepare Notification Monos for all members
+                    List<Mono<Void>> notificationMonos = membersToNotify.stream()
+                        .map(memberId -> {
+                            Map<String, Object> payload = new HashMap<>();
+                            payload.put("recipientUserId", memberId);
+                            payload.put("message", "Project '" + projectName + "' has been deleted");
+                            payload.put("projectId", projectId);
+                            payload.put("eventType", "PROJECT_DELETED");
+                            payload.put("title", projectName); // Pass name for better message on Notification Server
+                            
+                            return sendNotificationSafe(payload);
+                        })
+                        .toList();
+
+                    // 2. Notification Phase: Wait for all notifications to be sent
+                    Mono<Void> sendNotifications = Mono.when(notificationMonos)
+                        .doOnSuccess(v -> publishEvent("project.deleted: " + projectId)); // Publish event after successful notifications
+
+                    // 3. Deletion Phase: Execute deletion only AFTER notifications are sent
+                    Mono<Void> deleteOperation = taskServiceClient.deleteTasksByProjectId(projectId)
+                            .then(projectRepository.delete(existing));
+                            
+                    // 4. Chain Notifications before Deletion
+                    return sendNotifications
+                            .then(deleteOperation)
+                            .doOnSuccess(v -> log.info("Project deleted successfully: {}", projectId))
+                            .doOnError(e -> log.error("Error deleting project {}: {}", projectId, e.getMessage()));
+                });
     }
 
     // -------------------- MEMBER MANAGEMENT --------------------
@@ -166,7 +237,17 @@ public class ProjectServiceImpl implements ProjectService {
                     return projectRepository.save(project)
                             .map(saved -> {
                                 saved.deserializeLists();
-                                membersDTO.getMemberIds().forEach(id -> publishEvent("project.member.added: " + id + " -> " + projectId));
+                                membersDTO.getMemberIds().forEach(id -> {
+                                    publishEvent("project.member.added: " + id + " -> " + projectId);
+
+                                    Map<String, Object> payload = new HashMap<>();
+                                    payload.put("recipientUserId", id); // ✅ FIXED
+                                    payload.put("message", "You were added to project " + projectId);
+                                    payload.put("projectId", projectId);
+                                    payload.put("eventType", "PROJECT_MEMBER_ADDED");
+
+                                    sendNotificationSafe(payload).subscribe();
+                                });
                                 return mapToDTO(saved);
                             });
                 });
@@ -187,7 +268,17 @@ public class ProjectServiceImpl implements ProjectService {
                     return projectRepository.save(project)
                             .map(saved -> {
                                 saved.deserializeLists();
-                                membersDTO.getMemberIds().forEach(id -> publishEvent("project.member.removed: " + id + " -> " + projectId));
+                                membersDTO.getMemberIds().forEach(id -> {
+                                    publishEvent("project.member.removed: " + id + " -> " + projectId);
+
+                                    Map<String, Object> payload = new HashMap<>();
+                                    payload.put("recipientUserId", id); // ✅ FIXED
+                                    payload.put("message", "You were removed from project " + projectId);
+                                    payload.put("projectId", projectId);
+                                    payload.put("eventType", "PROJECT_MEMBER_REMOVED");
+
+                                    sendNotificationSafe(payload).subscribe();
+                                });
                                 return mapToDTO(saved);
                             });
                 });

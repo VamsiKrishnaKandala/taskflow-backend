@@ -23,7 +23,7 @@ public class TaskServiceClientWebClient {
     public Mono<Void> deleteTasksByProjectId(String projectId) {
         return webClientBuilder.build()
                 .delete()
-                .uri(taskServiceUrl + "/tasks/project/{projectId}", projectId)
+                .uri(taskServiceUrl + "/project/{projectId}", projectId)
                 .retrieve()
                 .bodyToMono(Void.class)
                 .doOnSuccess(v -> log.info("Deleted tasks for project {}", projectId))
