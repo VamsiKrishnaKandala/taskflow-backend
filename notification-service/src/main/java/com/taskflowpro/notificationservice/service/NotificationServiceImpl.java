@@ -5,6 +5,8 @@ import com.taskflowpro.notificationservice.client.TaskServiceClientWebClient;
 import com.taskflowpro.notificationservice.client.UserServiceClientWebClient;
 import com.taskflowpro.notificationservice.dto.NotificationRequestDTO;
 import com.taskflowpro.notificationservice.dto.NotificationResponseDTO;
+import com.taskflowpro.notificationservice.exception.AccessDeniedException; // Import
+import com.taskflowpro.notificationservice.exception.NotificationNotFoundException; // You may need to create this
 import com.taskflowpro.notificationservice.model.Notification;
 import com.taskflowpro.notificationservice.repository.NotificationRepository;
 import lombok.RequiredArgsConstructor;
@@ -13,44 +15,52 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
-import reactor.core.scheduler.Scheduler;
-import reactor.core.scheduler.Schedulers;
 
 import java.time.LocalDateTime;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.HashMap; // Import HashMap
+import java.util.concurrent.atomic.AtomicBoolean; // Keep existing imports
+import reactor.core.scheduler.Scheduler; // Keep existing imports
+import reactor.core.scheduler.Schedulers; // Keep existing imports
+
 
 /**
  * Core Notification Service implementation.
  * Handles event processing, enrichment, persistence, and live SSE streaming.
+ * NOW INCLUDES ROLE-BASED AUTHORIZATION.
  */
 @Service
 @RequiredArgsConstructor
 @Slf4j
-public class NotificationServiceImpl implements NotificationService {
+public class NotificationServiceImpl implements NotificationService { // Implements the new interface
 
-    // Dependencies injected via constructor or framework
     private final NotificationRepository notificationRepository;
     private final TaskServiceClientWebClient taskClient;
     private final UserServiceClientWebClient userClient;
     private final ProjectServiceClientWebClient projectClient;
     private final Sinks.Many<Notification> notificationSink;
 
-    // --- ID GENERATION LEGACY FIELDS (Kept for completeness but unused) ---
+    // --- ID GENERATION LEGACY FIELDS (Kept from original) ---
     private final AtomicBoolean idLock = new AtomicBoolean(false);
     private final Mono<Long> idGeneratorGate = Mono.just(1L).cache();
-    private final Scheduler idGenerationScheduler = Schedulers.newSingle("notification-id-creator"); 
+    private final Scheduler idGenerationScheduler = Schedulers.newSingle("notification-id-creator");
+
+    // --- Helper for Role Checking ---
+    private boolean isAdmin(String requesterRole) {
+        return "ROLE_ADMIN".equals(requesterRole);
+    }
 
     /**
-     * Creates a new notification based on the request DTO.
-     * It relies on the R2DBC database to generate the sequence ID automatically,
-     * and uses the simplified entity model where the formatted ID is computed on demand.
+     * Creates a new notification.
+     * Forwards auth headers to WebClients for data enrichment.
      */
     @Override
-    public Mono<NotificationResponseDTO> createNotification(NotificationRequestDTO request) {
-        Mono<Map> taskMono = (request.getTaskId() == null) ? Mono.empty() : taskClient.getTaskById(request.getTaskId());
-        Mono<Map> recipientMono = (request.getRecipientUserId() == null) ? Mono.empty() : userClient.getUserById(request.getRecipientUserId());
-        Mono<Map> projectMono = (request.getProjectId() == null) ? Mono.empty() : projectClient.getProjectById(request.getProjectId());
+    public Mono<NotificationResponseDTO> createNotification(NotificationRequestDTO request, String authorizationHeader, String requesterId, String requesterRole) {
+        
+        // --- MODIFIED: Pass auth headers to enrichment clients ---
+        Mono<Map> taskMono = taskClient.getTaskById(request.getTaskId(), authorizationHeader, requesterId, requesterRole);
+        Mono<Map> recipientMono = userClient.getUserById(request.getRecipientUserId(), authorizationHeader, requesterId, requesterRole);
+        Mono<Map> projectMono = projectClient.getProjectById(request.getProjectId(), authorizationHeader, requesterId, requesterRole);
 
         return Mono.zipDelayError(
                 taskMono.defaultIfEmpty(Map.of()),
@@ -64,37 +74,31 @@ public class NotificationServiceImpl implements NotificationService {
 
                 String message = buildMessage(request, task, recipient, project);
 
-                // 1. Build entity for INSERT (sequenceId is null)
                 Notification n = Notification.builder()
-                    .userId(request.getRecipientUserId())
-                    .message(message)
-                    .read(false)
-                    .metadata(buildMetadata(request, task, recipient, project))
-                    .createdAt(request.getOccurredAt() == null ? LocalDateTime.now() : request.getOccurredAt())
-                    .build();
+                        .userId(request.getRecipientUserId())
+                        .message(message)
+                        .read(false)
+                        .metadata(buildMetadata(request, task, recipient, project))
+                        .createdAt(request.getOccurredAt() == null ? LocalDateTime.now() : request.getOccurredAt())
+                        .build();
 
-                // 2. Single Save: INSERT the record and retrieve the auto-generated sequenceId.
-                // The DB ID is now correct, and the formatted ID is available via saved.getId().
                 return notificationRepository.save(n)
-                    .flatMap(saved -> {
-                        Sinks.EmitResult result = notificationSink.tryEmitNext(saved);
-                        if (result.isFailure()) {
-                            log.error("⚠️ Failed to emit notification to sink: {} result={}", saved.getId(), result);
-                        } else {
-                            // saved.getId() automatically returns the formatted NF-### string.
-                            log.info("✅ Notification emitted: {} -> user {}", saved.getId(), saved.getUserId());
-                        }
-                        return Mono.just(saved);
-                    })
-                    .map(NotificationResponseDTO::fromEntity)
-                    .switchIfEmpty(Mono.error(new RuntimeException("Notification could not be saved")));
+                        .flatMap(saved -> {
+                            Sinks.EmitResult result = notificationSink.tryEmitNext(saved);
+                            if (result.isFailure()) {
+                                log.error("⚠️ Failed to emit notification to sink: {} result={}", saved.getId(), result);
+                            } else {
+                                log.info("✅ Notification emitted: {} -> user {}", saved.getId(), saved.getUserId());
+                            }
+                            return Mono.just(saved);
+                        })
+                        .map(NotificationResponseDTO::fromEntity)
+                        .switchIfEmpty(Mono.error(new RuntimeException("Notification could not be saved")));
             })
             .doOnError(e -> log.error("❌ Error creating notification: {}", e.getMessage(), e));
     }
 
-    /**
-     * Builds a human-readable message based on the event type and related entities.
-     */
+    // ... (buildMessage, coalesce, buildMetadata helpers remain the same) ...
     private String buildMessage(NotificationRequestDTO request, Map task, Map recipient, Map project) {
         switch (request.getEventType() == null ? com.taskflowpro.notificationservice.dto.EventType.GENERIC : request.getEventType()) {
             case TASK_CREATED:
@@ -118,28 +122,16 @@ public class NotificationServiceImpl implements NotificationService {
                 return String.format("You were added to project %s", project != null ? project.get("name") : request.getProjectId());
             case PROJECT_UPDATED:
                 return String.format("Project %s has been updated", project != null ? project.get("name") : request.getProjectId());
-                
-            // === FIX: Add handling for PROJECT_DELETED ===
             case PROJECT_DELETED:
-                // Use coalesce(request.getTitle(), ...) as a fallback for the project name if the enrichment failed
                 return String.format("Project %s has been deleted", 
                         coalesce(request.getTitle(), project != null ? String.valueOf(project.get("name")) : request.getProjectId()));
-                
             default:
                 return coalesce(request.getTitle(), "You have a new notification");
         }
     }
-
-    /**
-     * Utility method to return the first non-blank string.
-     */
     private String coalesce(String a, String b) {
         return (a != null && !a.isBlank()) ? a : (b != null ? b : "");
     }
-
-    /**
-     * Builds metadata JSON string for the notification.
-     */
     private String buildMetadata(NotificationRequestDTO request, Map task, Map recipient, Map project) {
         StringBuilder sb = new StringBuilder();
         sb.append("{");
@@ -152,23 +144,46 @@ public class NotificationServiceImpl implements NotificationService {
         return sb.toString();
     }
 
+
     /**
      * Fetches notifications for a specific user, sorted by creation time.
+     * Authorization: Only the user themselves or an Admin can access.
      */
     @Override
-    public Flux<NotificationResponseDTO> getNotificationsForUser(String userId) {
+    public Flux<NotificationResponseDTO> getNotificationsForUser(String userId, String requesterId, String requesterRole) {
+        log.info("Attempt to get notifications for user {} by requester {}", userId, requesterId);
+        
+        // --- AUTHORIZATION CHECK ---
+        if (!isAdmin(requesterRole) && !requesterId.equals(userId)) {
+            log.warn("Access Denied: User {} ({}) attempted to read notifications for user {}", requesterId, requesterRole, userId);
+            return Flux.error(new AccessDeniedException("You are not authorized to view these notifications."));
+        }
+        // --- END CHECK ---
+        
+        log.debug("Access granted for user {} to view notifications for {}", requesterId, userId);
         return notificationRepository.findAllByUserIdOrderByCreatedAtDesc(userId)
-            .map(NotificationResponseDTO::fromEntity);
+                .map(NotificationResponseDTO::fromEntity);
     }
 
     /**
      * Fetches all notifications in the system, sorted by creation time.
+     * Authorization: Admin only.
      */
     @Override
-    public Flux<NotificationResponseDTO> getAllNotifications() {
+    public Flux<NotificationResponseDTO> getAllNotifications(String requesterId, String requesterRole) {
+        log.info("Attempt to get all notifications by requester {}", requesterId);
+        
+        // --- AUTHORIZATION CHECK ---
+        if (!isAdmin(requesterRole)) {
+            log.warn("Access Denied: User {} ({}) attempted to list all notifications.", requesterId, requesterRole);
+            return Flux.error(new AccessDeniedException("Only ADMIN users can list all notifications."));
+        }
+        // --- END CHECK ---
+        
+        log.debug("Admin access granted for getAllNotifications");
         return notificationRepository.findAll()
-            .sort((a, b) -> b.getCreatedAt().compareTo(a.getCreatedAt()))
-            .map(NotificationResponseDTO::fromEntity);
+                .sort((a, b) -> b.getCreatedAt().compareTo(a.getCreatedAt()))
+                .map(NotificationResponseDTO::fromEntity);
     }
 
     /**
@@ -181,15 +196,29 @@ public class NotificationServiceImpl implements NotificationService {
 
     /**
      * Marks a notification as read by its ID.
+     * Authorization: Only the user who owns the notification or an Admin.
      */
     @Override
-    public Mono<NotificationResponseDTO> markAsRead(String notificationId) {
+    public Mono<NotificationResponseDTO> markAsRead(String notificationId, String requesterId, String requesterRole) {
+        log.info("Attempt to mark notification {} as read by user {}", notificationId, requesterId);
+        
         return notificationRepository.findById(notificationId)
-            .switchIfEmpty(Mono.error(new IllegalArgumentException("Notification not found: " + notificationId)))
-            .flatMap(n -> {
-                n.markAsRead();
-                return notificationRepository.save(n);
-            })
-            .map(NotificationResponseDTO::fromEntity);
+                // Use a custom exception if you created one, otherwise IllegalArgumentException is fine
+                .switchIfEmpty(Mono.error(new IllegalArgumentException("Notification not found: " + notificationId))) 
+                .flatMap(n -> {
+                    
+                    // --- AUTHORIZATION CHECK ---
+                    if (!n.getUserId().equals(requesterId) && !isAdmin(requesterRole)) {
+                         log.warn("Access Denied: User {} ({}) attempted to mark notification {} as read, but it belongs to user {}",
+                                 requesterId, requesterRole, notificationId, n.getUserId());
+                         return Mono.error(new AccessDeniedException("You are not authorized to modify this notification."));
+                    }
+                    // --- END CHECK ---
+                    
+                    log.info("Access granted. Marking notification {} as read", notificationId);
+                    n.markAsRead(); // This method is in your Notification model, sets read=true
+                    return notificationRepository.save(n);
+                })
+                .map(NotificationResponseDTO::fromEntity);
     }
 }

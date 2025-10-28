@@ -2,37 +2,38 @@ package com.taskflowpro.notificationservice.service;
 
 import com.taskflowpro.notificationservice.dto.NotificationRequestDTO;
 import com.taskflowpro.notificationservice.dto.NotificationResponseDTO;
+import com.taskflowpro.notificationservice.model.Notification;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-/**
- * Service API for notification operations.
- */
 public interface NotificationService {
 
     /**
-     * Create a notification from an incoming event. Enriches event with task/user/project details (best-effort),
-     * saves to DB and emits to SSE sink.
+     * Creates a new notification.
+     * (Called by other services, auth headers are for enrichment).
      */
-    Mono<NotificationResponseDTO> createNotification(NotificationRequestDTO request);
+    Mono<NotificationResponseDTO> createNotification(NotificationRequestDTO request, String authorizationHeader, String requesterId, String requesterRole);
 
     /**
-     * Get all notifications for a user (from DB).
+     * Gets notifications for a specific user.
+     * Must check if requesterId == userId OR requesterRole == ADMIN.
      */
-    Flux<NotificationResponseDTO> getNotificationsForUser(String userId);
+    Flux<NotificationResponseDTO> getNotificationsForUser(String userId, String requesterId, String requesterRole);
 
     /**
-     * Get all notifications in the system (for admin/debugging).
+     * Gets all notifications in the system.
+     * Must check if requesterRole == ADMIN.
      */
-    Flux<NotificationResponseDTO> getAllNotifications();
+    Flux<NotificationResponseDTO> getAllNotifications(String requesterId, String requesterRole);
 
     /**
-     * Stream notifications globally (SSE). Caller can filter by userId on handler level.
+     * Returns the live stream sink.
      */
-    Flux<com.taskflowpro.notificationservice.model.Notification> notificationStream();
+    Flux<Notification> notificationStream();
 
     /**
-     * Mark notification read (toggle).
+     * Marks a specific notification as read.
+     * Must check if requesterId == notification.userId OR requesterRole == ADMIN.
      */
-    Mono<NotificationResponseDTO> markAsRead(String notificationId);
+    Mono<NotificationResponseDTO> markAsRead(String notificationId, String requesterId, String requesterRole);
 }

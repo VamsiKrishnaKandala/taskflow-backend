@@ -1,35 +1,80 @@
 package com.taskflowpro.projectservice.service;
 
+import com.taskflowpro.projectservice.dto.ProjectMembersDTO;
 import com.taskflowpro.projectservice.dto.ProjectRequestDTO;
 import com.taskflowpro.projectservice.dto.ProjectResponseDTO;
-import com.taskflowpro.projectservice.dto.ProjectMembersDTO;
 import com.taskflowpro.projectservice.dto.ProjectTagsDTO;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 /**
- * Service interface for Project operations.
- * Provides abstraction for CRUD + member/tag management + event streaming.
+ * Service interface defining business logic for Project operations.
+ * All methods now include authorization parameters.
  */
 public interface ProjectService {
 
-    Mono<ProjectResponseDTO> createProject(ProjectRequestDTO projectRequest);
+    /**
+     * Creates a new project.
+     * Access: ADMIN, MANAGER
+     * (Makes downstream calls to NotificationService)
+     */
+    Mono<ProjectResponseDTO> createProject(ProjectRequestDTO projectRequest, String requesterId, String requesterRole, String authorizationHeader);
 
-    Mono<ProjectResponseDTO> getProjectById(String projectId);
+    /**
+     * Retrieves a project by its ID.
+     * Access: ADMIN, MANAGER, or Project Member
+     * (Makes downstream call to UserService if enriching member data - future)
+     */
+    Mono<ProjectResponseDTO> getProjectById(String projectId, String requesterId, String requesterRole, String authorizationHeader);
 
-    Flux<ProjectResponseDTO> getAllProjects();
+    /**
+     * Retrieves all projects, filtered by user role.
+     * Access: ADMIN (all), MANAGER (their projects)
+     */
+    Flux<ProjectResponseDTO> getAllProjects(String requesterId, String requesterRole, String authorizationHeader);
 
-    Mono<ProjectResponseDTO> updateProject(String projectId, ProjectRequestDTO projectRequest);
+    /**
+     * Updates an existing project.
+     * Access: ADMIN, MANAGER (if project lead/owner)
+     * (Makes downstream calls to NotificationService)
+     */
+    Mono<ProjectResponseDTO> updateProject(String projectId, ProjectRequestDTO projectRequest, String requesterId, String requesterRole, String authorizationHeader);
 
-    Mono<Void> deleteProject(String projectId);
+    /**
+     * Deletes a project.
+     * Access: ADMIN only
+     * (Makes downstream calls to NotificationService and TaskService)
+     */
+    Mono<Void> deleteProject(String projectId, String requesterId, String requesterRole, String authorizationHeader);
 
-    Mono<ProjectResponseDTO> addMembers(String projectId, ProjectMembersDTO membersDTO);
+    /**
+     * Adds members to a project.
+     * Access: ADMIN, MANAGER (if project lead/owner)
+     * (Makes downstream calls to NotificationService)
+     */
+    Mono<ProjectResponseDTO> addMembers(String projectId, ProjectMembersDTO membersDTO, String requesterId, String requesterRole, String authorizationHeader);
 
-    Mono<ProjectResponseDTO> removeMembers(String projectId, ProjectMembersDTO membersDTO);
+    /**
+     * Removes members from a project.
+     * Access: ADMIN, MANAGER (if project lead/owner)
+     * (Makes downstream calls to NotificationService)
+     */
+    Mono<ProjectResponseDTO> removeMembers(String projectId, ProjectMembersDTO membersDTO, String requesterId, String requesterRole, String authorizationHeader);
 
-    Mono<ProjectResponseDTO> addTags(String projectId, ProjectTagsDTO tagsDTO);
+    /**
+     * Adds tags to a project.
+     * Access: ADMIN, MANAGER (if project lead/owner)
+     */
+    Mono<ProjectResponseDTO> addTags(String projectId, ProjectTagsDTO tagsDTO, String requesterId, String requesterRole, String authorizationHeader);
 
-    Mono<ProjectResponseDTO> removeTags(String projectId, ProjectTagsDTO tagsDTO);
+    /**
+     * Removes tags from a project.
+     * Access: ADMIN, MANAGER (if project lead/owner)
+     */
+    Mono<ProjectResponseDTO> removeTags(String projectId, ProjectTagsDTO tagsDTO, String requesterId, String requesterRole, String authorizationHeader);
 
+    /**
+     * Retrieves the event stream for projects.
+     */
     Flux<String> projectEventsStream();
 }

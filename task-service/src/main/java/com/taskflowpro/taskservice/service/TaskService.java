@@ -1,41 +1,43 @@
 package com.taskflowpro.taskservice.service;
 
-import com.taskflowpro.taskservice.dto.TaskAssigneesDTO;
-import com.taskflowpro.taskservice.dto.TaskRequestDTO;
-import com.taskflowpro.taskservice.dto.TaskResponseDTO;
-import com.taskflowpro.taskservice.dto.TaskTagsDTO;
+import com.taskflowpro.taskservice.dto.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-/**
- * Service interface for Task business logic.
- * Defines all operations as reactive methods using DTOs.
- */
 public interface TaskService {
 
-    Mono<TaskResponseDTO> createTask(TaskRequestDTO taskDTO);
+    // Add authHeader
+    Mono<TaskResponseDTO> createTask(TaskRequestDTO request, String requesterId, String requesterRole, String authorizationHeader);
 
-    Mono<TaskResponseDTO> getTaskById(String id);
+    // Add authHeader
+    Mono<TaskResponseDTO> getTaskById(String id, String requesterId, String requesterRole, String authorizationHeader);
 
-    Flux<TaskResponseDTO> getAllTasks();
+    Flux<TaskResponseDTO> getAllTasks(String requesterId, String requesterRole, String authorizationHeader);
 
-    Flux<TaskResponseDTO> getTasksByProjectId(String projectId);
+    // Add authHeader
+    Flux<TaskResponseDTO> getTasksByProjectId(String projectId, String requesterId, String requesterRole, String authorizationHeader);
 
-    Mono<TaskResponseDTO> updateTask(String id, TaskRequestDTO updatedDTO);
+    // Add authHeader
+    Mono<TaskResponseDTO> updateTask(String id, TaskRequestDTO request, String requesterId, String requesterRole, String authorizationHeader);
 
-    Mono<TaskResponseDTO> updateTaskStatus(String id, String newStatus, String changedBy);
+    // Add authHeader
+    Mono<TaskResponseDTO> updateTaskStatus(String id, String status, String requesterId, String requesterRole, String authorizationHeader);
 
-    Mono<Void> deleteTask(String id);
-    
-    Mono<Void> deleteTasksByProjectId(String projectId);
+    // Add authHeader
+    Mono<Void> deleteTask(String id, String requesterId, String requesterRole, String authorizationHeader);
 
-    Mono<TaskResponseDTO> addAssignees(String taskId, TaskAssigneesDTO dto);
+    // Add authHeader
+    Mono<Void> deleteTasksByProjectId(String projectId, String requesterId, String requesterRole, String authorizationHeader);
 
-    Mono<TaskResponseDTO> removeAssignees(String taskId, TaskAssigneesDTO dto);
+    // Add authHeader
+    Mono<TaskResponseDTO> addAssignees(String taskId, TaskAssigneesDTO dto, String requesterId, String requesterRole, String authorizationHeader);
 
-    Mono<TaskResponseDTO> addTags(String taskId, TaskTagsDTO dto);
+    // Add authHeader
+    Mono<TaskResponseDTO> removeAssignees(String taskId, TaskAssigneesDTO dto, String requesterId, String requesterRole, String authorizationHeader);
 
-    Mono<TaskResponseDTO> removeTags(String taskId, TaskTagsDTO dto);
+    Mono<TaskResponseDTO> addTags(String taskId, TaskTagsDTO dto, String requesterId, String requesterRole);
+
+    Mono<TaskResponseDTO> removeTags(String taskId, TaskTagsDTO dto, String requesterId, String requesterRole);
 
     Flux<String> taskEventsStream();
 }

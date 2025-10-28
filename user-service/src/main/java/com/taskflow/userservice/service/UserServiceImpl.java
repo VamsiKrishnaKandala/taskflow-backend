@@ -124,14 +124,18 @@ public class UserServiceImpl implements UserService {
         log.info("Fetching user by ID: {} requested by User ID: {}, Role: {}",
                  requestedUserId, requesterId, requesterRole);
 
+        // --- MODIFIED AUTHORIZATION CHECK (RULE B + Manager) ---
         boolean isAdmin = Role.ROLE_ADMIN.name().equals(requesterRole);
+        boolean isManager = Role.ROLE_MANAGER.name().equals(requesterRole); // <-- ADD THIS
         boolean isSelf = requestedUserId.equals(requesterId);
 
-        if (!isAdmin && !isSelf) {
+        // Allow if Admin, OR Manager, OR self
+        if (!isAdmin && !isManager && !isSelf) { // <-- ADDED !isManager
             log.warn("Access Denied: User {} ({}) attempted to access details for user {}",
                      requesterId, requesterRole, requestedUserId);
-            return Mono.error(new AccessDeniedException("Users can only access their own details, or must be ADMIN."));
+            return Mono.error(new AccessDeniedException("Users can only access their own details, or must be ADMIN/MANAGER."));
         }
+        // --- END MODIFICATION ---
 
         log.debug("Authorization check passed for user {} to access user {}", requesterId, requestedUserId);
         return userRepository.findById(requestedUserId)

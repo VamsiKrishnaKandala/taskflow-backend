@@ -10,7 +10,7 @@ DELETE FROM projects;
 -- Insert sample project records (PF-001 to PF-005)
 -- ============================================================
 
-INSERT INTO projects (id, name, description, deadline, member_ids, tags)
+/*INSERT INTO projects (id, name, description, deadline, member_ids, tags)
 VALUES
 -- 🧱 PF-001
 ('PF-001', 
@@ -51,3 +51,4 @@ VALUES
  DATE_ADD(CURDATE(), INTERVAL 90 DAY),
  'U001,U004,U008',
  'ui,dragdrop,realtime');
+*/

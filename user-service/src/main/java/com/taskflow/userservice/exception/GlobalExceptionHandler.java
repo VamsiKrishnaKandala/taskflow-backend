@@ -1,130 +1,95 @@
 package com.taskflow.userservice.exception;
 
 import lombok.extern.slf4j.Slf4j;
-
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
-// Import the new exception
-import org.springframework.web.server.ServerWebInputException; // <-- ADD THIS IMPORT
+import org.springframework.web.server.ServerWebInputException;
 import reactor.core.publisher.Mono;
 
+import java.time.LocalDateTime;
 import java.util.List;
-// We no longer need this import
-// import org.springframework.web.bind.support.WebExchangeBindException; 
 
-/**
- * Global exception handler for the User Service.
- * Catches custom exceptions and validation errors, returning a
- * standardized ErrorResponse.
- */
 @RestControllerAdvice
 @Order(Ordered.HIGHEST_PRECEDENCE)
 @Slf4j
 public class GlobalExceptionHandler {
 
     /**
-     * Handles validation errors (e.g., @NotNull, @Email).
-     * This catches the ServerWebInputException we manually throw from our handler.
-     *
-     * @param ex The validation exception.
-     * @return A Mono<ResponseEntity> with HTTP 400 (Bad Request).
+     * Helper to build the standard error response.
      */
-    // --- THIS METHOD IS CHANGED ---
-    @ExceptionHandler(ServerWebInputException.class) 
-    public Mono<ResponseEntity<ErrorResponse>> handleValidationException(ServerWebInputException ex) {
-        log.warn("Validation error: {}", ex.getMessage());
-        
-        // The exception's "reason" is the string we built
-        List<String> details = List.of(ex.getReason()); 
-
-        ErrorResponse errorResponse = new ErrorResponse(
-                HttpStatus.BAD_REQUEST.value(),
-                "Validation Failed",
-                details
-        );
-        return Mono.just(ResponseEntity.badRequest().body(errorResponse));
+    private Mono<ResponseEntity<ErrorResponse>> buildErrorResponse(HttpStatus status, String message, String detail) {
+        ErrorResponse errorResponse = new ErrorResponse(status.value(), message, detail);
+        log.warn("Exception handled [{}]: {} - {}", status, message, detail);
+        return Mono.just(ResponseEntity.status(status).body(errorResponse));
     }
-    // --- END OF CHANGE ---
+    
+    /**
+     * Helper to build the standard error response with list details.
+     */
+    private Mono<ResponseEntity<ErrorResponse>> buildErrorResponse(HttpStatus status, String message, List<String> details) {
+        ErrorResponse errorResponse = new ErrorResponse(status.value(), message, details);
+        log.warn("Exception handled [{}]: {} - {}", status, message, details);
+        return Mono.just(ResponseEntity.status(status).body(errorResponse));
+    }
+
+    /**
+     * Handles validation errors (e.g., @NotNull, @Email).
+     */
+    @ExceptionHandler(ServerWebInputException.class)
+    public Mono<ResponseEntity<ErrorResponse>> handleValidationException(ServerWebInputException ex) {
+        List<String> details = List.of(ex.getReason());
+        return buildErrorResponse(HttpStatus.BAD_REQUEST, "Validation Failed", details);
+    }
 
     /**
      * Handles "Resource Not Found" errors.
-     * @param ex The custom exception.
-     * @return A Mono<ResponseEntity> with HTTP 404 (Not Found).
      */
     @ExceptionHandler(ResourceNotFoundException.class)
     public Mono<ResponseEntity<ErrorResponse>> handleResourceNotFoundException(ResourceNotFoundException ex) {
-        log.warn("Resource not found: {}", ex.getMessage());
-        ErrorResponse errorResponse = new ErrorResponse(
-                HttpStatus.NOT_FOUND.value(),
-                "Resource Not Found",
-                ex.getMessage()
-        );
-        return Mono.just(ResponseEntity.status(HttpStatus.NOT_FOUND).body(errorResponse));
+        return buildErrorResponse(HttpStatus.NOT_FOUND, "Resource Not Found", ex.getMessage());
     }
 
     /**
      * Handles "Duplicate Resource" errors.
-     * @param ex The custom exception.
-     * @return A Mono<ResponseEntity> with HTTP 409 (Conflict).
      */
     @ExceptionHandler(DuplicateResourceException.class)
     public Mono<ResponseEntity<ErrorResponse>> handleDuplicateResourceException(DuplicateResourceException ex) {
-        log.warn("Duplicate resource attempt: {}", ex.getMessage());
-        ErrorResponse errorResponse = new ErrorResponse(
-                HttpStatus.CONFLICT.value(),
-                "Duplicate Resource",
-                ex.getMessage()
-        );
-        return Mono.just(ResponseEntity.status(HttpStatus.CONFLICT).body(errorResponse));
+        return buildErrorResponse(HttpStatus.CONFLICT, "Duplicate Resource", ex.getMessage());
     }
 
     /**
-     * Handles all other uncaught exceptions.
-     * @param ex The generic exception.
-     * @return A Mono<ResponseEntity> with HTTP 500 (Internal Server Error).
-     */
-    @ExceptionHandler(Exception.class)
-    public Mono<ResponseEntity<ErrorResponse>> handleGenericException(Exception ex) {
-        log.error("An unexpected error occurred", ex);
-        ErrorResponse errorResponse = new ErrorResponse(
-                HttpStatus.INTERNAL_SERVER_ERROR.value(),
-                "Internal Server Error",
-                "An unexpected error occurred. Please try again later."
-        );
-        return Mono.just(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse));
-    }
-    /**
      * Handles "Invalid Login" errors.
-     * @param ex The custom exception.
-     * @return A Mono<ResponseEntity> with HTTP 401 (Unauthorized).
      */
     @ExceptionHandler(InvalidLoginException.class)
     public Mono<ResponseEntity<ErrorResponse>> handleInvalidLoginException(InvalidLoginException ex) {
-        log.warn("Login attempt failed: {}", ex.getMessage());
-        ErrorResponse errorResponse = new ErrorResponse(
-                HttpStatus.UNAUTHORIZED.value(),
-                "Login Failed",
-                ex.getMessage()
-        );
-        return Mono.just(ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(errorResponse));
+        return buildErrorResponse(HttpStatus.UNAUTHORIZED, "Login Failed", ex.getMessage());
     }
+
     /**
      * Handles "Access Denied" errors (Authorization failures).
-     * @param ex The custom exception.
-     * @return A Mono<ResponseEntity> with HTTP 403 (Forbidden).
      */
     @ExceptionHandler(AccessDeniedException.class)
     public Mono<ResponseEntity<ErrorResponse>> handleAccessDeniedException(AccessDeniedException ex) {
-        log.warn("Access Denied: {}", ex.getMessage());
-        ErrorResponse errorResponse = new ErrorResponse(
-                HttpStatus.FORBIDDEN.value(),
-                "Access Denied",
-                ex.getMessage()
-        );
-        return Mono.just(ResponseEntity.status(HttpStatus.FORBIDDEN).body(errorResponse));
+        return buildErrorResponse(HttpStatus.FORBIDDEN, "Access Denied", ex.getMessage());
+    }
+    
+    /**
+     * Handles all other uncaught exceptions.
+     */
+    @ExceptionHandler(Throwable.class)
+    public Mono<ResponseEntity<ErrorResponse>> handleGenericException(Throwable ex) {
+        log.error("An unexpected error occurred in user-service", ex);
+        
+        if (ex instanceof org.springframework.web.reactive.function.client.WebClientResponseException) {
+            String errorBody = ((org.springframework.web.reactive.function.client.WebClientResponseException) ex).getResponseBodyAsString();
+            log.error("Service-to-service call failed: {}", errorBody);
+            return buildErrorResponse(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error", "Downstream service failed: " + errorBody);
+        }
+        
+        return buildErrorResponse(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error", "An unexpected error occurred. Please try again later.");
     }
 }

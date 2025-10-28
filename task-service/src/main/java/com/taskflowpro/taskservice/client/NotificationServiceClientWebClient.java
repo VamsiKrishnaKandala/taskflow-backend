@@ -3,16 +3,13 @@ package com.taskflowpro.taskservice.client;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
-
 import java.util.Map;
 
-/**
- * Client to send notification events to Notification Service.
- * Used by TaskService to trigger live updates & alerts.
- */
 @Component
 @RequiredArgsConstructor
 @Slf4j
@@ -20,24 +17,30 @@ public class NotificationServiceClientWebClient {
 
     private final WebClient.Builder webClientBuilder;
 
-    // The base URL includes http://localhost:8084/api/v1
-    @Value("${notification.service.url}")
+    @Value("${notification.service.url}") // http://localhost:8080
     private String notificationServiceUrl;
 
-    public Mono<Void> sendNotificationEvent(Map<String, Object> payload) {
-        // FIX: Configure the builder to use the explicit base URL property.
-        // We ensure the base URL is set correctly, then append the resource path.
-        WebClient client = webClientBuilder
-            .baseUrl(notificationServiceUrl) 
-            .build();
+    // --- MODIFIED: Needs auth headers to call the secured endpoint ---
+    public Mono<Void> sendNotificationEvent(Map<String, Object> payload, String authorizationHeader, String requesterId, String requesterRole) {
+        
+        // --- THIS IS THE FIX ---
+        String targetUri = notificationServiceUrl + "/api/v1/notifications";
+        // ---
+        
+        log.debug("TASK-SERVICE: Sending notification event to {} on behalf of user {}", targetUri, requesterId);
 
-        return client.post()
-                // Use the correct resource path relative to the base URL
-                .uri("/notifications") 
+        return webClientBuilder.build()
+                .post()
+                .uri(targetUri)
+                .contentType(MediaType.APPLICATION_JSON)
+                .header(HttpHeaders.AUTHORIZATION, authorizationHeader) // Forward token
+                .header("X-User-Id", requesterId)
+                .header("X-User-Role", requesterRole)
                 .bodyValue(payload)
                 .retrieve()
                 .bodyToMono(Void.class)
-                .doOnSuccess(v -> log.info("✅ Notification event sent successfully to {}", notificationServiceUrl + "/notifications"))
-                .doOnError(e -> log.error("❌ Failed to send notification event to {}: {}", notificationServiceUrl + "/notifications", e.getMessage()));
+                .doOnSuccess(v -> log.info("Successfully sent notification for user {}", payload.get("recipientUserId")))
+                .doOnError(ex -> log.error("Failed to send notification event for user {}: {}", payload.get("recipientUserId"), ex.getMessage()))
+                .onErrorResume(ex -> Mono.empty());
     }
 }

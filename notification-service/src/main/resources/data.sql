@@ -1,4 +1,4 @@
--- ============================================================
+/*-- ============================================================
 -- DATA: Sample Notifications (Final Structure)
 -- Description: Initial demo data for Notification Service
 -- ============================================================
@@ -24,4 +24,4 @@ VALUES
 
 -- Set the starting point for the AUTO_INCREMENT sequence
 -- This ensures the next new notification gets sequence_id = 6 (formatted as NF-006).
-ALTER TABLE notifications AUTO_INCREMENT = 6;
+ALTER TABLE notifications AUTO_INCREMENT = 6;*/

@@ -1,21 +1,27 @@
 package com.taskflowpro.projectservice.handler;
 
+import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
 import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.server.ServerRequest;
 import org.springframework.web.reactive.function.server.ServerResponse;
-import org.springframework.core.ParameterizedTypeReference;
 
 import com.taskflowpro.projectservice.dto.ProjectRequestDTO;
 import com.taskflowpro.projectservice.dto.ProjectResponseDTO;
 import com.taskflowpro.projectservice.dto.ProjectMembersDTO;
 import com.taskflowpro.projectservice.dto.ProjectTagsDTO;
+import com.taskflowpro.projectservice.exception.AccessDeniedException;
+import com.taskflowpro.projectservice.exception.ErrorResponse;
+import com.taskflowpro.projectservice.exception.ProjectNotFoundException;
 import com.taskflowpro.projectservice.service.ProjectService;
 
 import jakarta.validation.ConstraintViolation;
@@ -24,28 +30,28 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Mono;
 
-/**
- * Handles HTTP requests for Project operations:
- * - CRUD operations
- * - Member management (add/remove)
- * - Tag management (add/remove)
- * 
- * Works with DTOs (ProjectRequestDTO, ProjectResponseDTO, etc.) and reactive types (Mono/Flux)
- */
 @Component
 @RequiredArgsConstructor
 @Slf4j
 public class ProjectHandler {
 
-    private final ProjectService projectService; // Service layer for CRUD, member, tag operations
-    private final Validator validator;           // Jakarta Bean Validator for request validation
+    private final ProjectService projectService;
+    private final Validator validator;
 
-    /**
-     * Validates a DTO object using Jakarta Bean Validation.
-     * Returns a Mono<Void> that emits an error if validation fails.
-     */
-    private <T> Mono<Void> validate(T object) {
-        if (validator == null) return Mono.empty(); // skip validation if validator is null
+    // --- Authorization Header Helpers ---
+    private String getRequesterId(ServerRequest request) {
+        return request.headers().firstHeader("X-User-Id");
+    }
+    private String getRequesterRole(ServerRequest request) {
+        return request.headers().firstHeader("X-User-Role");
+    }
+    private String getAuthHeader(ServerRequest request) {
+        return request.headers().firstHeader(HttpHeaders.AUTHORIZATION);
+    }
+    // ---
+
+    private <T> Mono<T> validate(T object) { // Changed to return Mono<T>
+        if (validator == null) return Mono.just(object);
         Set<ConstraintViolation<T>> violations = validator.validate(object);
         if (!violations.isEmpty()) {
             String errorMessages = violations.stream()
@@ -54,15 +60,34 @@ public class ProjectHandler {
             log.warn("Validation failed: {}", errorMessages);
             return Mono.error(new IllegalArgumentException(errorMessages));
         }
-        return Mono.empty();
+        return Mono.just(object); // Pass the object through
+    }
+    
+    // --- Helper for handler-level error responses ---
+    private Mono<ServerResponse> buildErrorResponse(HttpStatus status, String error, String message, ServerRequest request) {
+        ErrorResponse errorResponse = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(status.value())
+                .error(error)
+                .message(message)
+                .build();
+        log.warn("Handler mapping error [{}]: {} - {} for path {}", status, error, message, request.path());
+        return ServerResponse.status(status)
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(errorResponse);
     }
 
     // -------------------- CRUD OPERATIONS --------------------
 
     public Mono<ServerResponse> createProject(ServerRequest request) {
+        String requesterId = getRequesterId(request);
+        String requesterRole = getRequesterRole(request);
+        String authHeader = getAuthHeader(request);
+        log.info("Handler: createProject invoked by User: {}, Role: {}", requesterId, requesterRole);
+
         return request.bodyToMono(ProjectRequestDTO.class)
-                .flatMap(dto -> validate(dto)
-                        .then(projectService.createProject(dto)))
+                .flatMap(this::validate) // Validate DTO
+                .flatMap(dto -> projectService.createProject(dto, requesterId, requesterRole, authHeader)) // Pass headers
                 .flatMap(saved -> ServerResponse.ok()
                         .contentType(MediaType.APPLICATION_JSON)
                         .bodyValue(saved));
@@ -70,25 +95,46 @@ public class ProjectHandler {
 
     public Mono<ServerResponse> getProjectById(ServerRequest request) {
         String id = request.pathVariable("id");
-        log.info("Fetching project with ID: {}", id);
-        return projectService.getProjectById(id)
+        String requesterId = getRequesterId(request);
+        String requesterRole = getRequesterRole(request);
+        String authHeader = getAuthHeader(request);
+
+        log.info("Handler: getProjectById {} invoked by User: {}, Role: {}", id, requesterId, requesterRole);
+        return projectService.getProjectById(id, requesterId, requesterRole, authHeader) // Pass headers
                 .flatMap(project -> ServerResponse.ok()
                         .contentType(MediaType.APPLICATION_JSON)
-                        .bodyValue(project));
+                        .bodyValue(project))
+                // Add specific error handling for this Mono endpoint
+                .onErrorResume(AccessDeniedException.class, ex -> buildErrorResponse(HttpStatus.FORBIDDEN, "Access Denied", ex.getMessage(), request))
+                .onErrorResume(ProjectNotFoundException.class, ex -> buildErrorResponse(HttpStatus.NOT_FOUND, "Project Not Found", ex.getMessage(), request));
     }
 
     public Mono<ServerResponse> getAllProjects(ServerRequest request) {
-        log.info("Fetching all projects");
-        return ServerResponse.ok()
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(projectService.getAllProjects(), ProjectResponseDTO.class);
+        String requesterId = getRequesterId(request);
+        String requesterRole = getRequesterRole(request);
+        String authHeader = getAuthHeader(request);
+        log.info("Handler: getAllProjects invoked by User: {}, Role: {}", requesterId, requesterRole);
+
+        return projectService.getAllProjects(requesterId, requesterRole, authHeader) // Pass headers
+                .collectList() // Collect Flux to Mono<List>
+                .flatMap(projects -> ServerResponse.ok()
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .bodyValue(projects)
+                )
+                // Handle errors from the Flux stream
+                .onErrorResume(AccessDeniedException.class, ex -> buildErrorResponse(HttpStatus.FORBIDDEN, "Access Denied", ex.getMessage(), request));
     }
 
     public Mono<ServerResponse> updateProject(ServerRequest request) {
         String id = request.pathVariable("id");
+        String requesterId = getRequesterId(request);
+        String requesterRole = getRequesterRole(request);
+        String authHeader = getAuthHeader(request);
+        log.info("Handler: updateProject {} invoked by User: {}, Role: {}", id, requesterId, requesterRole);
+
         return request.bodyToMono(ProjectRequestDTO.class)
-                .flatMap(dto -> validate(dto)
-                        .then(projectService.updateProject(id, dto)))
+                .flatMap(this::validate)
+                .flatMap(dto -> projectService.updateProject(id, dto, requesterId, requesterRole, authHeader)) // Pass headers
                 .flatMap(updated -> ServerResponse.ok()
                         .contentType(MediaType.APPLICATION_JSON)
                         .bodyValue(updated));
@@ -96,7 +142,12 @@ public class ProjectHandler {
 
     public Mono<ServerResponse> deleteProject(ServerRequest request) {
         String id = request.pathVariable("id");
-        return projectService.deleteProject(id)
+        String requesterId = getRequesterId(request);
+        String requesterRole = getRequesterRole(request);
+        String authHeader = getAuthHeader(request);
+        log.info("Handler: deleteProject {} invoked by User: {}, Role: {}", id, requesterId, requesterRole);
+
+        return projectService.deleteProject(id, requesterId, requesterRole, authHeader) // Pass headers
                 .then(Mono.fromSupplier(() ->
                         Collections.singletonMap("message", "The Project " + id + " is deleted.")
                 ))
@@ -109,12 +160,14 @@ public class ProjectHandler {
 
     public Mono<ServerResponse> addMembers(ServerRequest request) {
         String projectId = request.pathVariable("id");
-        
-        // Reads the raw JSON array ["User1", "User2"] into List<String>
+        String requesterId = getRequesterId(request);
+        String requesterRole = getRequesterRole(request);
+        String authHeader = getAuthHeader(request);
+        log.info("Handler: addMembers to {} invoked by User: {}, Role: {}", projectId, requesterId, requesterRole);
+
         return request.bodyToMono(new ParameterizedTypeReference<List<String>>() {})
-                // Maps the List<String> to your ProjectMembersDTO
-                .map(memberList -> new ProjectMembersDTO(memberList))
-                .flatMap(dto -> projectService.addMembers(projectId, dto))
+                .map(ProjectMembersDTO::new)
+                .flatMap(dto -> projectService.addMembers(projectId, dto, requesterId, requesterRole, authHeader)) // Pass headers
                 .flatMap(updated -> ServerResponse.ok()
                         .contentType(MediaType.APPLICATION_JSON)
                         .bodyValue(updated));
@@ -122,12 +175,14 @@ public class ProjectHandler {
 
     public Mono<ServerResponse> removeMembers(ServerRequest request) {
         String projectId = request.pathVariable("id");
-        
-        // Reads the raw JSON array ["User1", "User2"] into List<String>
+        String requesterId = getRequesterId(request);
+        String requesterRole = getRequesterRole(request);
+        String authHeader = getAuthHeader(request);
+        log.info("Handler: removeMembers from {} invoked by User: {}, Role: {}", projectId, requesterId, requesterRole);
+
         return request.bodyToMono(new ParameterizedTypeReference<List<String>>() {})
-                // Maps the List<String> to your ProjectMembersDTO
-                .map(memberList -> new ProjectMembersDTO(memberList))
-                .flatMap(dto -> projectService.removeMembers(projectId, dto))
+                .map(ProjectMembersDTO::new)
+                .flatMap(dto -> projectService.removeMembers(projectId, dto, requesterId, requesterRole, authHeader)) // Pass headers
                 .flatMap(updated -> ServerResponse.ok()
                         .contentType(MediaType.APPLICATION_JSON)
                         .bodyValue(updated));
@@ -136,12 +191,14 @@ public class ProjectHandler {
 
     public Mono<ServerResponse> addTags(ServerRequest request) {
         String projectId = request.pathVariable("id");
-        
-        // Reads the raw JSON array ["backend", "urgent"] into List<String>
+        String requesterId = getRequesterId(request);
+        String requesterRole = getRequesterRole(request);
+        String authHeader = getAuthHeader(request);
+        log.info("Handler: addTags to {} invoked by User: {}, Role: {}", projectId, requesterId, requesterRole);
+
         return request.bodyToMono(new ParameterizedTypeReference<List<String>>() {})
-                // Maps the List<String> to your ProjectTagsDTO
-                .map(tagList -> new ProjectTagsDTO(tagList))
-                .flatMap(dto -> projectService.addTags(projectId, dto))
+                .map(ProjectTagsDTO::new)
+                .flatMap(dto -> projectService.addTags(projectId, dto, requesterId, requesterRole, authHeader)) // Pass headers
                 .flatMap(updated -> ServerResponse.ok()
                         .contentType(MediaType.APPLICATION_JSON)
                         .bodyValue(updated));
@@ -149,12 +206,14 @@ public class ProjectHandler {
 
     public Mono<ServerResponse> removeTags(ServerRequest request) {
         String projectId = request.pathVariable("id");
+        String requesterId = getRequesterId(request);
+        String requesterRole = getRequesterRole(request);
+        String authHeader = getAuthHeader(request);
+        log.info("Handler: removeTags from {} invoked by User: {}, Role: {}", projectId, requesterId, requesterRole);
         
-        // Reads the raw JSON array ["backend", "urgent"] into List<String>
         return request.bodyToMono(new ParameterizedTypeReference<List<String>>() {})
-                // Maps the List<String> to your ProjectTagsDTO
-                .map(tagList -> new ProjectTagsDTO(tagList))
-                .flatMap(dto -> projectService.removeTags(projectId, dto))
+                .map(ProjectTagsDTO::new)
+                .flatMap(dto -> projectService.removeTags(projectId, dto, requesterId, requesterRole, authHeader)) // Pass headers
                 .flatMap(updated -> ServerResponse.ok()
                         .contentType(MediaType.APPLICATION_JSON)
                         .bodyValue(updated));

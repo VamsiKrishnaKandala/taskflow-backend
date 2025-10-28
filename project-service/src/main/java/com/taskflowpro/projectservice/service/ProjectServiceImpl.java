@@ -1,8 +1,9 @@
 package com.taskflowpro.projectservice.service;
 
-import com.taskflowpro.projectservice.client.TaskServiceClientWebClient;
 import com.taskflowpro.projectservice.client.NotificationServiceClientWebClient;
+import com.taskflowpro.projectservice.client.TaskServiceClientWebClient;
 import com.taskflowpro.projectservice.dto.*;
+import com.taskflowpro.projectservice.exception.AccessDeniedException;
 import com.taskflowpro.projectservice.exception.InvalidProjectDataException;
 import com.taskflowpro.projectservice.exception.ProjectNotFoundException;
 import com.taskflowpro.projectservice.model.Project;
@@ -14,17 +15,13 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.HashMap;
+import java.util.stream.Collectors;
 
-/**
- * Project Service Implementation using WebClient instead of Feign.
- * Fully reactive and supports CRUD, member management, tag management,
- * and optional cascading task deletion via TaskService WebClient.
- */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -44,18 +41,28 @@ public class ProjectServiceImpl implements ProjectService {
         }
     }
 
-    // FIX 1: Returns Mono<Void> to allow chaining
-    private Mono<Void> sendNotificationSafe(Map<String, Object> payload) {
-        return notificationClient.sendNotificationEvent(payload)
+    // --- MODIFIED: sendNotificationSafe now requires auth headers ---
+    private Mono<Void> sendNotificationSafe(Map<String, Object> payload, String authorizationHeader, String requesterId, String requesterRole) {
+        // Pass auth headers to the notification client
+        return notificationClient.sendNotificationEvent(payload, authorizationHeader, requesterId, requesterRole)
                 .doOnError(ex -> log.error("Notification failed: {}", ex.getMessage()))
-                .onErrorResume(ex -> Mono.empty()) // Continue flow if notification fails
-                .then(); // Convert Mono<NotificationResponseDTO> to Mono<Void>
+                .onErrorResume(ex -> Mono.empty())
+                .then();
     }
+
+    // --- Helper for Role Checking ---
+    private boolean isAdmin(String requesterRole) { return "ROLE_ADMIN".equals(requesterRole); }
+    private boolean isManager(String requesterRole) { return "ROLE_MANAGER".equals(requesterRole); }
 
     // -------------------- CREATE --------------------
     @Override
-    public Mono<ProjectResponseDTO> createProject(ProjectRequestDTO projectRequest) {
-        log.info("Creating new project: {}", projectRequest.getName());
+    public Mono<ProjectResponseDTO> createProject(ProjectRequestDTO projectRequest, String requesterId, String requesterRole, String authorizationHeader) {
+        log.info("Attempting to create new project: {} by User: {}, Role: {}", projectRequest.getName(), requesterId, requesterRole);
+
+        if (!isAdmin(requesterRole) && !isManager(requesterRole)) {
+            log.warn("Access Denied: User {} ({}) attempted to create a project.", requesterId, requesterRole);
+            return Mono.error(new AccessDeniedException("Only ADMIN or MANAGER users can create projects."));
+        }
 
         if (projectRequest.getName() == null || projectRequest.getName().isBlank()) {
             return Mono.error(new InvalidProjectDataException("Project name cannot be empty"));
@@ -67,6 +74,7 @@ public class ProjectServiceImpl implements ProjectService {
                 .map(id -> Integer.parseInt(id.substring(3)))
                 .sort()
                 .last(0)
+                .defaultIfEmpty(0) // Handle case for first project
                 .flatMap(max -> {
                     String nextId = String.format("PF-%03d", max + 1);
                     Project project = Project.builder()
@@ -79,7 +87,7 @@ public class ProjectServiceImpl implements ProjectService {
                             .isNew(true)
                             .build();
 
-                    project.serializeLists();
+                    project.serializeLists(); // Convert lists to strings
                     log.info("Generated new project ID: {}", nextId);
 
                     return projectRepository.save(project)
@@ -89,18 +97,15 @@ public class ProjectServiceImpl implements ProjectService {
                             })
                             .doOnSuccess(saved -> {
                                 log.info("Project created successfully with ID: {}", saved.getId());
-
-                                // ---- Notification Integration (safe) ----
                                 if (saved.getMemberIds() != null && !saved.getMemberIds().isEmpty()) {
                                     saved.getMemberIds().forEach(memberId -> {
                                         Map<String, Object> payload = new HashMap<>();
-                                        payload.put("recipientUserId", memberId); // ✅ FIXED
+                                        payload.put("recipientUserId", memberId);
                                         payload.put("message", "Project " + saved.getName() + " created");
                                         payload.put("projectId", saved.getId());
                                         payload.put("eventType", "PROJECT_CREATED");
-
-                                        // Fire-and-forget subscribe here is acceptable in doOnSuccess
-                                        sendNotificationSafe(payload).subscribe(); 
+                                        // --- PASS AUTH HEADERS ---
+                                        sendNotificationSafe(payload, authorizationHeader, requesterId, requesterRole).subscribe();
                                     });
                                 }
                             })
@@ -110,35 +115,59 @@ public class ProjectServiceImpl implements ProjectService {
 
     // -------------------- READ --------------------
     @Override
-    public Mono<ProjectResponseDTO> getProjectById(String projectId) {
-        log.info("Fetching project with ID: {}", projectId);
+    public Mono<ProjectResponseDTO> getProjectById(String projectId, String requesterId, String requesterRole, String authorizationHeader) {
+        log.info("Fetching project ID: {} by User: {}, Role: {}", projectId, requesterId, requesterRole);
+        
         return projectRepository.findById(projectId)
                 .switchIfEmpty(Mono.error(new ProjectNotFoundException(projectId)))
-                .map(p -> {
-                    p.deserializeLists();
-                    return mapToDTO(p);
+                .flatMap(project -> {
+                    project.deserializeLists(); 
+                    boolean isMember = project.getMemberIdsList() != null && project.getMemberIdsList().contains(requesterId);
+                    if (!isAdmin(requesterRole) && !isManager(requesterRole) && !isMember) {
+                         log.warn("Access Denied: User {} ({}) attempted to access project {}", requesterId, requesterRole, projectId);
+                         return Mono.error(new AccessDeniedException("You are not authorized to view this project."));
+                    }
+                    log.info("Access granted. Project retrieved successfully: {}", project.getName());
+                    return Mono.just(mapToDTO(project));
                 })
-                .doOnNext(p -> log.info("Project retrieved successfully: {}", p.getName()))
-                .doOnError(e -> log.error("Error fetching project: {}", e.getMessage()));
+                .doOnError(e -> log.error("Error fetching project {}: {}", projectId, e.getMessage()));
     }
 
     @Override
-    public Flux<ProjectResponseDTO> getAllProjects() {
-        log.info("Fetching all projects...");
-        return projectRepository.findAll()
-                .map(p -> {
-                    p.deserializeLists();
-                    return mapToDTO(p);
-                })
-                .doOnComplete(() -> log.info("Fetched all projects successfully"))
-                .doOnError(e -> log.error("Error fetching projects: {}", e.getMessage()));
+    public Flux<ProjectResponseDTO> getAllProjects(String requesterId, String requesterRole, String authorizationHeader) {
+        log.info("Fetching all projects for User: {}, Role: {}", requesterId, requesterRole);
+
+        if (isAdmin(requesterRole)) {
+            log.info("Admin access: fetching all projects.");
+            return projectRepository.findAll()
+                    .map(p -> {
+                        p.deserializeLists();
+                        return mapToDTO(p);
+                    });
+        } else if (isManager(requesterRole)) {
+            log.info("Manager access: fetching projects for member ID: {}", requesterId);
+            return projectRepository.findAll()
+                    .map(p -> {
+                        p.deserializeLists();
+                        return p;
+                    })
+                    .filter(p -> p.getMemberIdsList() != null && p.getMemberIdsList().contains(requesterId))
+                    .map(this::mapToDTO);
+        } else {
+            log.warn("Access Denied: User {} ({}) attempted to list all projects.", requesterId, requesterRole);
+            return Flux.error(new AccessDeniedException("Only ADMIN or MANAGER users can list all projects."));
+        }
     }
 
     // -------------------- UPDATE --------------------
     @Override
-    public Mono<ProjectResponseDTO> updateProject(String projectId, ProjectRequestDTO projectRequest) {
-        log.info("Updating project with ID: {}", projectId);
+    public Mono<ProjectResponseDTO> updateProject(String projectId, ProjectRequestDTO projectRequest, String requesterId, String requesterRole, String authorizationHeader) {
+        log.info("Updating project ID: {} by User: {}, Role: {}", projectId, requesterId, requesterRole);
 
+        if (!isAdmin(requesterRole) && !isManager(requesterRole)) {
+            log.warn("Access Denied: User {} ({}) attempted to update project {}", requesterId, requesterRole, projectId);
+            return Mono.error(new AccessDeniedException("Only ADMIN or MANAGER users can update projects."));
+        }
         if (projectRequest.getName() == null || projectRequest.getName().isBlank()) {
             return Mono.error(new InvalidProjectDataException("Project name cannot be empty"));
         }
@@ -161,17 +190,15 @@ public class ProjectServiceImpl implements ProjectService {
                 })
                 .doOnSuccess(p -> {
                     log.info("Project updated successfully: {}", p.getId());
-
-                    // ---- Notification Integration (safe) ----
                     if (p.getMemberIds() != null && !p.getMemberIds().isEmpty()) {
                         p.getMemberIds().forEach(memberId -> {
                             Map<String, Object> payload = new HashMap<>();
-                            payload.put("recipientUserId", memberId); // ✅ FIXED
+                            payload.put("recipientUserId", memberId);
                             payload.put("message", "Project " + p.getName() + " updated");
                             payload.put("projectId", p.getId());
                             payload.put("eventType", "PROJECT_UPDATED");
-
-                            sendNotificationSafe(payload).subscribe(); // Still fire-and-forget in doOnSuccess
+                            // --- PASS AUTH HEADERS ---
+                            sendNotificationSafe(payload, authorizationHeader, requesterId, requesterRole).subscribe();
                         });
                     }
                 })
@@ -180,40 +207,41 @@ public class ProjectServiceImpl implements ProjectService {
 
     // -------------------- DELETE --------------------
     @Override
-    public Mono<Void> deleteProject(String projectId) {
-        log.info("Deleting project with ID: {}", projectId);
+    public Mono<Void> deleteProject(String projectId, String requesterId, String requesterRole, String authorizationHeader) {
+        log.info("Attempting to delete project ID: {} by User: {}, Role: {}", projectId, requesterId, requesterRole);
+
+        if (!isAdmin(requesterRole)) {
+            log.warn("Access Denied: User {} ({}) attempted to delete project {}", requesterId, requesterRole, projectId);
+            return Mono.error(new AccessDeniedException("Only ADMIN users can delete projects."));
+        }
 
         return projectRepository.findById(projectId)
                 .switchIfEmpty(Mono.error(new ProjectNotFoundException(projectId)))
                 .flatMap(existing -> {
                     String projectName = existing.getName();
-                    // Deserialize the list here to ensure the member list is ready before deletion
-                    existing.deserializeLists(); 
+                    existing.deserializeLists();
                     List<String> membersToNotify = existing.getMemberIdsList() != null ? existing.getMemberIdsList() : List.of();
-                    
-                    // 1. Prepare Notification Monos for all members
+
                     List<Mono<Void>> notificationMonos = membersToNotify.stream()
-                        .map(memberId -> {
-                            Map<String, Object> payload = new HashMap<>();
-                            payload.put("recipientUserId", memberId);
-                            payload.put("message", "Project '" + projectName + "' has been deleted");
-                            payload.put("projectId", projectId);
-                            payload.put("eventType", "PROJECT_DELETED");
-                            payload.put("title", projectName); // Pass name for better message on Notification Server
-                            
-                            return sendNotificationSafe(payload);
-                        })
-                        .toList();
+                            .map(memberId -> {
+                                Map<String, Object> payload = new HashMap<>();
+                                payload.put("recipientUserId", memberId);
+                                payload.put("message", "Project '" + projectName + "' has been deleted");
+                                payload.put("projectId", projectId);
+                                payload.put("eventType", "PROJECT_DELETED");
+                                payload.put("title", projectName);
+                                // --- PASS AUTH HEADERS ---
+                                return sendNotificationSafe(payload, authorizationHeader, requesterId, requesterRole);
+                            })
+                            .collect(Collectors.toList());
 
-                    // 2. Notification Phase: Wait for all notifications to be sent
                     Mono<Void> sendNotifications = Mono.when(notificationMonos)
-                        .doOnSuccess(v -> publishEvent("project.deleted: " + projectId)); // Publish event after successful notifications
+                            .doOnSuccess(v -> publishEvent("project.deleted: " + projectId));
 
-                    // 3. Deletion Phase: Execute deletion only AFTER notifications are sent
-                    Mono<Void> deleteOperation = taskServiceClient.deleteTasksByProjectId(projectId)
+                    // --- PASS AUTH HEADERS ---
+                    Mono<Void> deleteOperation = taskServiceClient.deleteTasksByProjectId(projectId, requesterId, requesterRole, authorizationHeader)
                             .then(projectRepository.delete(existing));
-                            
-                    // 4. Chain Notifications before Deletion
+
                     return sendNotifications
                             .then(deleteOperation)
                             .doOnSuccess(v -> log.info("Project deleted successfully: {}", projectId))
@@ -223,8 +251,14 @@ public class ProjectServiceImpl implements ProjectService {
 
     // -------------------- MEMBER MANAGEMENT --------------------
     @Override
-    public Mono<ProjectResponseDTO> addMembers(String projectId, ProjectMembersDTO membersDTO) {
-        log.info("Adding members {} to project {}", membersDTO.getMemberIds(), projectId);
+    public Mono<ProjectResponseDTO> addMembers(String projectId, ProjectMembersDTO membersDTO, String requesterId, String requesterRole, String authorizationHeader) {
+        log.info("Adding members {} to project {} by User: {}, Role: {}", membersDTO.getMemberIds(), projectId, requesterId, requesterRole);
+        
+        if (!isAdmin(requesterRole) && !isManager(requesterRole)) {
+            log.warn("Access Denied: User {} ({}) attempted to add members to project {}", requesterId, requesterRole, projectId);
+            return Mono.error(new AccessDeniedException("Only ADMIN or MANAGER users can add members."));
+        }
+        
         return projectRepository.findById(projectId)
                 .switchIfEmpty(Mono.error(new ProjectNotFoundException(projectId)))
                 .flatMap(project -> {
@@ -239,14 +273,13 @@ public class ProjectServiceImpl implements ProjectService {
                                 saved.deserializeLists();
                                 membersDTO.getMemberIds().forEach(id -> {
                                     publishEvent("project.member.added: " + id + " -> " + projectId);
-
                                     Map<String, Object> payload = new HashMap<>();
-                                    payload.put("recipientUserId", id); // ✅ FIXED
+                                    payload.put("recipientUserId", id);
                                     payload.put("message", "You were added to project " + projectId);
                                     payload.put("projectId", projectId);
                                     payload.put("eventType", "PROJECT_MEMBER_ADDED");
-
-                                    sendNotificationSafe(payload).subscribe();
+                                    // --- PASS AUTH HEADERS ---
+                                    sendNotificationSafe(payload, authorizationHeader, requesterId, requesterRole).subscribe();
                                 });
                                 return mapToDTO(saved);
                             });
@@ -254,8 +287,14 @@ public class ProjectServiceImpl implements ProjectService {
     }
 
     @Override
-    public Mono<ProjectResponseDTO> removeMembers(String projectId, ProjectMembersDTO membersDTO) {
-        log.info("Removing members {} from project {}", membersDTO.getMemberIds(), projectId);
+    public Mono<ProjectResponseDTO> removeMembers(String projectId, ProjectMembersDTO membersDTO, String requesterId, String requesterRole, String authorizationHeader) {
+        log.info("Removing members {} from project {} by User: {}, Role: {}", membersDTO.getMemberIds(), projectId, requesterId, requesterRole);
+        
+        if (!isAdmin(requesterRole) && !isManager(requesterRole)) {
+            log.warn("Access Denied: User {} ({}) attempted to remove members from project {}", requesterId, requesterRole, projectId);
+            return Mono.error(new AccessDeniedException("Only ADMIN or MANAGER users can remove members."));
+        }
+
         return projectRepository.findById(projectId)
                 .switchIfEmpty(Mono.error(new ProjectNotFoundException(projectId)))
                 .flatMap(project -> {
@@ -270,14 +309,13 @@ public class ProjectServiceImpl implements ProjectService {
                                 saved.deserializeLists();
                                 membersDTO.getMemberIds().forEach(id -> {
                                     publishEvent("project.member.removed: " + id + " -> " + projectId);
-
                                     Map<String, Object> payload = new HashMap<>();
-                                    payload.put("recipientUserId", id); // ✅ FIXED
+                                    payload.put("recipientUserId", id);
                                     payload.put("message", "You were removed from project " + projectId);
                                     payload.put("projectId", projectId);
                                     payload.put("eventType", "PROJECT_MEMBER_REMOVED");
-
-                                    sendNotificationSafe(payload).subscribe();
+                                    // --- PASS AUTH HEADERS ---
+                                    sendNotificationSafe(payload, authorizationHeader, requesterId, requesterRole).subscribe();
                                 });
                                 return mapToDTO(saved);
                             });
@@ -286,8 +324,14 @@ public class ProjectServiceImpl implements ProjectService {
 
     // -------------------- TAG MANAGEMENT --------------------
     @Override
-    public Mono<ProjectResponseDTO> addTags(String projectId, ProjectTagsDTO tagsDTO) {
-        log.info("Adding tags {} to project {}", tagsDTO.getTags(), projectId);
+    public Mono<ProjectResponseDTO> addTags(String projectId, ProjectTagsDTO tagsDTO, String requesterId, String requesterRole, String authorizationHeader) {
+        log.info("Adding tags {} to project {} by User: {}, Role: {}", tagsDTO.getTags(), projectId, requesterId, requesterRole);
+        
+        if (!isAdmin(requesterRole) && !isManager(requesterRole)) {
+            log.warn("Access Denied: User {} ({}) attempted to add tags to project {}", requesterId, requesterRole, projectId);
+            return Mono.error(new AccessDeniedException("Only ADMIN or MANAGER users can add tags."));
+        }
+
         return projectRepository.findById(projectId)
                 .switchIfEmpty(Mono.error(new ProjectNotFoundException(projectId)))
                 .flatMap(project -> {
@@ -307,8 +351,14 @@ public class ProjectServiceImpl implements ProjectService {
     }
 
     @Override
-    public Mono<ProjectResponseDTO> removeTags(String projectId, ProjectTagsDTO tagsDTO) {
-        log.info("Removing tags {} from project {}", tagsDTO.getTags(), projectId);
+    public Mono<ProjectResponseDTO> removeTags(String projectId, ProjectTagsDTO tagsDTO, String requesterId, String requesterRole, String authorizationHeader) {
+        log.info("Removing tags {} from project {} by User: {}, Role: {}", tagsDTO.getTags(), projectId, requesterId, requesterRole);
+
+        if (!isAdmin(requesterRole) && !isManager(requesterRole)) {
+            log.warn("Access Denied: User {} ({}) attempted to remove tags from project {}", requesterId, requesterRole, projectId);
+            return Mono.error(new AccessDeniedException("Only ADMIN or MANAGER users can remove tags."));
+        }
+        
         return projectRepository.findById(projectId)
                 .switchIfEmpty(Mono.error(new ProjectNotFoundException(projectId)))
                 .flatMap(project -> {
@@ -340,8 +390,8 @@ public class ProjectServiceImpl implements ProjectService {
                 .name(project.getName())
                 .description(project.getDescription())
                 .deadline(project.getDeadline())
-                .memberIds(project.getMemberIdsList())
-                .tags(project.getTagsList())
+                .memberIds(project.getMemberIdsList()) // Use the deserialized list
+                .tags(project.getTagsList()) // Use the deserialized list
                 .build();
     }
 }
