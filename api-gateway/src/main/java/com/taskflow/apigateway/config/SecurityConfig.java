@@ -1,43 +1,64 @@
 package com.taskflow.apigateway.config;
 
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.web.reactive.EnableWebFluxSecurity;
 import org.springframework.security.config.web.server.ServerHttpSecurity;
 import org.springframework.security.web.server.SecurityWebFilterChain;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.reactive.CorsConfigurationSource;
+import org.springframework.web.cors.reactive.UrlBasedCorsConfigurationSource;
+
+import java.util.List;
 
 /**
- * Configures the default Spring Security filter chain in the Gateway.
- * We disable all default security (CSRF, login pages) so that our
- * custom AuthenticationFilter is the only thing managing security.
+ * API Gateway Security config:
+ * - Disable CSRF (JWT-based)
+ * - Provide CORS configuration for browser clients
+ * - PermitAll at security-level so the Gateway GlobalFilter handles JWT validation / 401s
  */
 @Configuration
 @EnableWebFluxSecurity
-@Slf4j
 public class SecurityConfig {
 
     @Bean
     public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http) {
-        log.info("Configuring gateway security... Disabling CSRF and default auth.");
-        
-        return http
-                // 1. Disable CSRF - This is the fix for your 403 error
-                .csrf(ServerHttpSecurity.CsrfSpec::disable)
-                
-                // 2. Disable default login/logout pages
-                .formLogin(ServerHttpSecurity.FormLoginSpec::disable)
-                .logout(ServerHttpSecurity.LogoutSpec::disable)
-                
-                // 3. Disable HTTP Basic auth
-                .httpBasic(ServerHttpSecurity.HttpBasicSpec::disable)
-                
-                // 4. Tell this filter chain to PERMIT ALL requests
-                // This is critical. It lets requests pass through to our
-                // *custom* AuthenticationFilter, which will handle the 401s.
-                .authorizeExchange(exchange -> exchange
-                        .anyExchange().permitAll()
-                )
-                .build();
+        http
+            // Use our CORS source and disable CSRF (JWT)
+            .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+            .csrf(ServerHttpSecurity.CsrfSpec::disable)
+
+            // Disable default login forms & http-basic
+            .formLogin(ServerHttpSecurity.FormLoginSpec::disable)
+            .httpBasic(ServerHttpSecurity.HttpBasicSpec::disable)
+
+            // IMPORTANT: allow exchange through. AuthenticationFilter (GlobalFilter) will enforce JWT.
+            // If you prefer stricter rules you can .pathMatchers(...).permitAll() and .anyExchange().authenticated()
+            // but be sure the AuthenticationFilter is executed earlier than security blocking.
+            .authorizeExchange(ex -> ex.anyExchange().permitAll());
+
+        return http.build();
+    }
+
+    /**
+     * CORS config for browser clients (Next.js running on :3000)
+     * Exposes Authorization header and allows preflight.
+     */
+    @Bean
+    public CorsConfigurationSource corsConfigurationSource() {
+        CorsConfiguration cors = new CorsConfiguration();
+
+        // change origin in production
+        cors.setAllowedOrigins(List.of("http://localhost:3000"));
+        cors.setAllowedMethods(List.of("GET","POST","PUT","DELETE","OPTIONS","PATCH"));
+        cors.setAllowedHeaders(List.of("Authorization","Content-Type","X-Requested-With","X-User-Id","X-User-Role"));
+        cors.setExposedHeaders(List.of("Authorization","X-User-Id","X-User-Role"));
+        cors.setAllowCredentials(true);
+        cors.setMaxAge(3600L);
+
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration("/**", cors);
+        return source;
     }
 }

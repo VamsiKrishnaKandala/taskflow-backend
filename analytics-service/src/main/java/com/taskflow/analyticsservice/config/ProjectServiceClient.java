@@ -28,7 +28,7 @@ public class ProjectServiceClient {
      * Fetches all projects for a specific Manager or Admin
      */
     public Flux<ProjectDTO> getAllProjects(String authorizationHeader, String requesterId, String requesterRole) {
-        String targetUri = projectServiceUrl + "/api/v1/projects";
+        String targetUri = projectServiceUrl + "/projects";
         log.debug("ANALYTICS-SERVICE: Calling GET {}", targetUri);
 
         return webClient.get()
@@ -48,7 +48,7 @@ public class ProjectServiceClient {
      * This call is secured and requires the user's auth headers to be forwarded.
      */
     public Mono<ProjectDTO> getProjectById(String projectId, String authorizationHeader, String requesterId, String requesterRole) {
-        String targetUri = projectServiceUrl + "/api/v1/projects/" + projectId;
+        String targetUri = projectServiceUrl + "/projects/" + projectId;
         
         log.debug("ANALYTICS-SERVICE: Calling Project Service: GET {}", targetUri);
 

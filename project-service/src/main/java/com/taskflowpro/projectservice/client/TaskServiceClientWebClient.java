@@ -22,7 +22,7 @@ public class TaskServiceClientWebClient {
         log.debug("PROJECT-SERVICE: Deleting tasks for project {} on behalf of user {}", projectId, requesterId);
         
         // Construct full path from gateway root
-        String targetUri = taskServiceUrl + "/api/v1/tasks/project/" + projectId;
+        String targetUri = taskServiceUrl + "/tasks/project/" + projectId;
 
         return webClientBuilder.build()
                 .delete()

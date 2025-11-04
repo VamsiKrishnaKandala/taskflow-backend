@@ -22,6 +22,8 @@ import java.util.Date;
 public class JwtUtil {
 
     private final SecretKey secretKey;
+    // Define a standard 5-second tolerance for clock drift
+    private static final int CLOCK_SKEW_SECONDS = 5;
 
     /**
      * Constructor that injects the JWT secret from application.properties.
@@ -31,12 +33,12 @@ public class JwtUtil {
     public JwtUtil(@Value("${jwt.secret}") String secret) {
         // Create a secure SecretKey object from the string
         this.secretKey = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
-        log.info("JwtUtil initialized in API Gateway");
+        log.info("JwtUtil initialized in API Gateway with clock skew tolerance: {} seconds", CLOCK_SKEW_SECONDS);
     }
 
     /**
      * Extracts all claims from a token.
-     * This method also validates the token's signature.
+     * This method validates the token's signature and expiration with tolerance.
      *
      * @param token The JWT string.
      * @return The Claims object.
@@ -44,6 +46,8 @@ public class JwtUtil {
     public Claims extractAllClaims(String token) {
         return Jwts.parserBuilder()
                 .setSigningKey(secretKey)
+                // ✅ FIX: Add clock skew tolerance
+                .setAllowedClockSkewSeconds(CLOCK_SKEW_SECONDS)
                 .build()
                 .parseClaimsJws(token)
                 .getBody();
@@ -51,35 +55,39 @@ public class JwtUtil {
 
     /**
      * Checks if a token is expired.
+     * Note: This function is less critical as Jwts.parserBuilder handles expiration.
      *
      * @param token The JWT string.
      * @return true if the token is expired, false otherwise.
      */
     private boolean isTokenExpired(String token) {
         try {
-            return extractAllClaims(token).getExpiration().before(new Date());
+            // Rely on extractAllClaims to handle parsing and expiration with skew.
+            // If extractAllClaims succeeds, it's not expired within the tolerance.
+            extractAllClaims(token); 
+            return false;
         } catch (Exception e) {
+            // Catches ExpiredJwtException.
             log.warn("Error checking token expiration: {}", e.getMessage());
-            return true; // Assume expired if we can't parse it
+            return true;
         }
     }
 
     /**
      * Validates a token.
-     * Checks if the signature is correct and if it's expired.
+     * Checks if the signature is correct and if it's expired (using skew tolerance).
      *
      * @param token The JWT string.
      * @return true if the token is valid, false otherwise.
      */
     public boolean validateToken(String token) {
         try {
-            // Parsing the token with the secret key automatically validates the signature.
-            // If it fails (e.g., wrong signature), it throws an exception.
+            // Parsing the claims now performs signature validation AND expiration check
+            // with the configured 5-second tolerance. If it succeeds, the token is valid.
             extractAllClaims(token);
-            
-            // If parsing succeeds, we just check for expiration.
-            return !isTokenExpired(token);
+            return true; // Token is valid
         } catch (Exception e) {
+            // Catches ExpiredJwtException, SignatureException, MalformedJwtException, etc.
             log.warn("Invalid JWT token: {}", e.getMessage());
             return false;
         }

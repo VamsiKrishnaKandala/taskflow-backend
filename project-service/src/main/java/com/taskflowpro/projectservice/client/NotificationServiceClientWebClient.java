@@ -24,7 +24,7 @@ public class NotificationServiceClientWebClient {
         
         // --- THIS IS THE FIX ---
         // The correct, full path to the notification service endpoint
-        String targetUri = notificationServiceUrl + "/api/v1/notifications";
+        String targetUri = notificationServiceUrl + "/notifications";
         // ---
         
         log.debug("PROJECT-SERVICE: Sending notification event to {} on behalf of user {}", targetUri, requesterId);

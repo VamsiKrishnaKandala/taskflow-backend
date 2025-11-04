@@ -24,7 +24,7 @@ public class ProjectServiceClientWebClient {
     public Mono<Map> getProjectById(String projectId, String authorizationHeader, String requesterId, String requesterRole) {
         if (projectId == null) return Mono.empty();
         
-        String targetUri = projectServiceUrl + "/api/v1/projects/" + projectId;
+        String targetUri = projectServiceUrl + "/projects/" + projectId;
         
         return webClientBuilder.build()
                 .get()

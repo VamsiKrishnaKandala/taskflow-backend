@@ -147,24 +147,40 @@ public class UserServiceImpl implements UserService {
     }
 
     /**
-     * Retrieves all users. Requires ADMIN role.
+     * Retrieves all users. Requires ADMIN role for full list, or MANAGER role for EMPLOYEE list only.
      *
      * @param requesterRole The Role of the user making the request.
-     * @return Flux<UserResponse> emitting all users,
-     * or an error Flux if the requester is not an ADMIN.
+     * @return Flux<UserResponse> emitting all users (for ADMIN), or only EMPLOYEE users (for MANAGER),
+     * or an error Flux if the requester is not authorized.
      */
     @Override
     public Flux<UserResponse> findAllUsers(String requesterRole) {
         log.info("Fetching all users requested by role: {}", requesterRole);
 
-        if (!Role.ROLE_ADMIN.name().equals(requesterRole)) {
-            log.warn("Access Denied: User with role {} attempted to list all users.", requesterRole);
-            return Flux.error(new AccessDeniedException("Only ADMIN users can list all users."));
+        // 1. ADMIN has full access (returns all users)
+        if (Role.ROLE_ADMIN.name().equals(requesterRole)) {
+            log.info("Admin access: fetching all users.");
+            return userRepository.findAll()
+                    .map(UserResponse::fromEntity)
+                    .doOnError(ex -> log.error("Error fetching all users", ex));
         }
 
-        return userRepository.findAll()
-                .map(UserResponse::fromEntity)
-                .doOnError(ex -> log.error("Error fetching all users", ex)); // Log unexpected errors
+        // 2. MANAGER has restricted access (returns only EMPLOYEE users)
+        else if (Role.ROLE_MANAGER.name().equals(requesterRole)) {
+            log.info("Manager access: fetching only EMPLOYEE users.");
+            
+            // Find all users and filter to include only those with the EMPLOYEE role
+            return userRepository.findAll()
+                    .filter(user -> Role.ROLE_EMPLOYEE.name().equals(user.getRole()))
+                    .map(UserResponse::fromEntity)
+                    .doOnError(ex -> log.error("Error fetching EMPLOYEE users for manager", ex));
+        } 
+
+        // 3. All other roles are denied
+        else {
+            log.warn("Access Denied: User with role {} attempted to list all users.", requesterRole);
+            return Flux.error(new AccessDeniedException("You are not authorized to list users."));
+        }
     }
 
     /**

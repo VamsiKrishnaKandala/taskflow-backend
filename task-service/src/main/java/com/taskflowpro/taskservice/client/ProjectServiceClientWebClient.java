@@ -23,7 +23,7 @@ public class ProjectServiceClientWebClient {
         log.debug("TASK-SERVICE: Checking existence of project {} on behalf of user {}", projectId, requesterId);
         
         // Construct full URL from gateway root
-        String targetUri = projectServiceUrl + "/api/v1/projects/" + projectId;
+        String targetUri = projectServiceUrl + "/projects/" + projectId;
         
         return projectServiceWebClient.get()
                 .uri(targetUri) // Use the full gateway path

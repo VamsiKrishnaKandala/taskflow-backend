@@ -50,10 +50,14 @@ public class ProjectServiceImpl implements ProjectService {
                 .then();
     }
 
-    // --- Helper for Role Checking ---
-    private boolean isAdmin(String requesterRole) { return "ROLE_ADMIN".equals(requesterRole); }
-    private boolean isManager(String requesterRole) { return "ROLE_MANAGER".equals(requesterRole); }
-
+	 // --- Helper for Role Checking ---
+	    private boolean isAdmin(String requesterRole) { return "ROLE_ADMIN".equals(requesterRole); }
+	    private boolean isManager(String requesterRole) { return "ROLE_MANAGER".equals(requesterRole); }
+	    // --- NEW Helper Method ---
+	    private boolean isEmployee(String requesterRole) { 
+	        // Assuming any non-ADMIN/non-MANAGER role is a standard employee
+	        return !isAdmin(requesterRole) && !isManager(requesterRole); 
+	    }
     // -------------------- CREATE --------------------
     @Override
     public Mono<ProjectResponseDTO> createProject(ProjectRequestDTO projectRequest, String requesterId, String requesterRole, String authorizationHeader) {
@@ -133,19 +137,27 @@ public class ProjectServiceImpl implements ProjectService {
                 .doOnError(e -> log.error("Error fetching project {}: {}", projectId, e.getMessage()));
     }
 
+ // -------------------- READ --------------------
     @Override
     public Flux<ProjectResponseDTO> getAllProjects(String requesterId, String requesterRole, String authorizationHeader) {
         log.info("Fetching all projects for User: {}, Role: {}", requesterId, requesterRole);
 
-        if (isAdmin(requesterRole)) {
-            log.info("Admin access: fetching all projects.");
+        // Admins and Managers get full access to ALL projects
+        if (isAdmin(requesterRole) || isManager(requesterRole)) { 
+            String logMessage = isAdmin(requesterRole) ? "Admin access" : "Manager access";
+            log.info("{}: fetching all projects.", logMessage);
+            
             return projectRepository.findAll()
                     .map(p -> {
                         p.deserializeLists();
                         return mapToDTO(p);
                     });
-        } else if (isManager(requesterRole)) {
-            log.info("Manager access: fetching projects for member ID: {}", requesterId);
+        } 
+        // Employees only get access to projects they are members of
+        else if (isEmployee(requesterRole)) {
+            log.info("Employee access: fetching projects for member ID: {}", requesterId);
+            
+            // Employees can only see projects they are members of.
             return projectRepository.findAll()
                     .map(p -> {
                         p.deserializeLists();
@@ -153,12 +165,14 @@ public class ProjectServiceImpl implements ProjectService {
                     })
                     .filter(p -> p.getMemberIdsList() != null && p.getMemberIdsList().contains(requesterId))
                     .map(this::mapToDTO);
-        } else {
-            log.warn("Access Denied: User {} ({}) attempted to list all projects.", requesterId, requesterRole);
-            return Flux.error(new AccessDeniedException("Only ADMIN or MANAGER users can list all projects."));
+        } 
+        // All other roles are denied access
+        else {
+            log.warn("Access Denied: User {} ({}) attempted to list all projects with unknown role.", requesterId, requesterRole);
+            // Using a more generic denial, since the role isn't ADMIN, MANAGER, or EMPLOYEE.
+            return Flux.error(new AccessDeniedException("You are not authorized to list projects."));
         }
     }
-
     // -------------------- UPDATE --------------------
     @Override
     public Mono<ProjectResponseDTO> updateProject(String projectId, ProjectRequestDTO projectRequest, String requesterId, String requesterRole, String authorizationHeader) {

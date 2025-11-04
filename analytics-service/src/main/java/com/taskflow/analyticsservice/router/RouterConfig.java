@@ -15,18 +15,16 @@ public class RouterConfig {
 
     @Bean
     public RouterFunction<ServerResponse> analyticsRoutes(AnalyticsHandler handler) {
-        
-        // --- FIX: Explicitly nest all routes under the /api/v1 prefix ---
-        return RouterFunctions.route()
-            .path("/api/v1", builder -> builder
-                
-                // GET /api/v1/analytics/project/{projectId}/velocity
-                .GET("/analytics/project/{projectId}/velocity", handler::getProjectVelocity)
 
-                // GET /api/v1/analytics/user/{userId}/summary
-                .GET("/analytics/user/{userId}/summary", handler::getUserSummary)
-            )
+        // ✅ Removed /api/v1 prefix to match new routing convention
+        return RouterFunctions.route()
+            // GET /analytics/project/{projectId}/velocity
+            .GET("/analytics/project/{projectId}/velocity", handler::getProjectVelocity)
+
+            // GET /analytics/user/{userId}/summary
+            .GET("/analytics/user/{userId}/summary", handler::getUserSummary)
+
             .build();
-        // --- END FIX ---
     }
 }
+

@@ -24,7 +24,7 @@ public class TaskServiceClientWebClient {
     public Mono<Map> getTaskById(String taskId, String authorizationHeader, String requesterId, String requesterRole) {
         if (taskId == null) return Mono.empty();
         
-        String targetUri = taskServiceUrl + "/api/v1/tasks/" + taskId;
+        String targetUri = taskServiceUrl + "/tasks/" + taskId;
         
         return webClientBuilder.build()
                 .get()

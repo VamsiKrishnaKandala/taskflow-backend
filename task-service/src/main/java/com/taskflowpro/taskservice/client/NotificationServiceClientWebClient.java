@@ -24,7 +24,7 @@ public class NotificationServiceClientWebClient {
     public Mono<Void> sendNotificationEvent(Map<String, Object> payload, String authorizationHeader, String requesterId, String requesterRole) {
         
         // --- THIS IS THE FIX ---
-        String targetUri = notificationServiceUrl + "/api/v1/notifications";
+        String targetUri = notificationServiceUrl + "/notifications";
         // ---
         
         log.debug("TASK-SERVICE: Sending notification event to {} on behalf of user {}", targetUri, requesterId);

@@ -27,7 +27,7 @@ public class TaskServiceClient {
      * Fetches all tasks (for Admin)
      */
     public Flux<TaskDTO> getAllTasks(String authorizationHeader, String requesterId, String requesterRole) {
-        String targetUri = taskServiceUrl + "/api/v1/tasks";
+        String targetUri = taskServiceUrl + "/tasks";
         log.debug("ANALYTICS-SERVICE: Calling GET {}", targetUri);
 
         return webClient.get()
@@ -45,7 +45,7 @@ public class TaskServiceClient {
      * Fetches all tasks for a specific project
      */
     public Flux<TaskDTO> getTasksByProjectId(String projectId, String authorizationHeader, String requesterId, String requesterRole) {
-        String targetUri = taskServiceUrl + "/api/v1/tasks/project/" + projectId;
+        String targetUri = taskServiceUrl + "/tasks/project/" + projectId;
         log.debug("ANALYTICS-SERVICE: Calling GET {}", targetUri);
 
         return webClient.get()
